@@ -42,7 +42,18 @@ class marp_presenter_plugmod_t(ida_idaapi.plugmod_t):
         super().__init__()
         self._action_registered = False
         self._menu_attached = False
+        self._copy_ref_registered = False
         self._register()
+        self._register_copy_ref()
+
+    def _register_copy_ref(self):
+        try:
+            import copy_ref
+
+            copy_ref.register()
+            self._copy_ref_registered = True
+        except Exception:
+            logger.exception("failed to register Copy @reference action")
 
     def _register(self):
         desc = ida_kernwin.action_desc_t(
@@ -80,6 +91,14 @@ class marp_presenter_plugmod_t(ida_idaapi.plugmod_t):
             MarpPresenterForm.close_singleton()
         except Exception:
             logger.exception("Marp Presenter: error closing form during term")
+        if self._copy_ref_registered:
+            try:
+                import copy_ref
+
+                copy_ref.unregister()
+            except Exception:
+                logger.exception("failed to unregister Copy @reference action")
+            self._copy_ref_registered = False
         if self._menu_attached:
             ida_kernwin.detach_action_from_menu(MENU_PATH, ACTION_NAME)
             self._menu_attached = False

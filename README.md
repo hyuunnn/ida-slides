@@ -67,6 +67,11 @@ rename or re-analysis is reflected the next time you save. Unknown names are
 reported in IDA's output window when clicked (the built-in fallback viewer
 dims them instead).
 
+Going the other way: right-click in the disassembly, pseudocode, or hex view
+and pick **Copy @reference** — the token for that spot (`@name`,
+`@name:line` in pseudocode, `@0xADDR` for unnamed bytes) lands on the
+clipboard, ready to paste into your deck.
+
 ## Writing decks
 
 Each engine's standard conventions apply (front matter, `---` separators,
