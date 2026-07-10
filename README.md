@@ -69,6 +69,10 @@ Presenter follow is per-token (`!`), so you decide exactly where the deck
 drives IDA and where it waits for a click. The **Follow @!** toolbar toggle
 turns all auto-jumps on/off — e.g. off while editing, on while presenting.
 
+Hover any `@` link to preview its decompiled code in a tooltip (a few lines,
+with `►` on the `:line` target) without leaving the slide — handy for
+checking "which function was that again?" mid-talk.
+
 Line jumps (`:N`) and embeds (`[a:b]`) both read live from the IDB, so a
 rename or re-analysis is reflected the next time you save. Unknown names are
 reported in IDA's output window when clicked (the built-in fallback viewer

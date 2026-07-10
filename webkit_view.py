@@ -70,7 +70,13 @@ USER_JS = r"""
             'border-radius:3px;padding:0 .15em;text-decoration:none;' +
             'font-family:monospace;cursor:pointer;}' +
             'a.ida-xref:hover{background:rgba(78,161,255,.35);}' +
-            'a.ida-xref[data-ida-auto]{border-bottom:2px solid #4ea1ff;}';
+            'a.ida-xref[data-ida-auto]{border-bottom:2px solid #4ea1ff;}' +
+            '.ida-tip{position:fixed;z-index:2147483647;max-width:64ch;' +
+            'background:#1d232f;color:#c9d4e4;border:1px solid #3a4558;' +
+            'border-radius:6px;padding:8px 10px;font-family:ui-monospace,' +
+            'Menlo,monospace;font-size:12px;line-height:1.45;' +
+            'white-space:pre;overflow:hidden;box-shadow:0 4px 14px ' +
+            'rgba(0,0,0,.45);pointer-events:none;}';
         document.head.appendChild(style);
     }
 
@@ -174,6 +180,71 @@ USER_JS = r"""
     observer = new MutationObserver(schedule);
     rescan();
 
+    // ---- hover preview: pseudocode excerpt tooltip ------------------------
+    var previewCache = {};
+    var previewSeq = 0;
+    var hoverEl = null;
+    var hoverTimer = null;
+    var tip = null;
+
+    function showTip(el, text) {
+        if (!tip) {
+            tip = document.createElement('div');
+            tip.className = 'ida-tip';
+        }
+        if (!tip.isConnected) document.body.appendChild(tip);
+        tip.textContent = text;
+        tip.style.display = 'block';
+        var r = el.getBoundingClientRect();
+        var x = Math.min(r.left, window.innerWidth - tip.offsetWidth - 12);
+        var y = r.bottom + 6;
+        if (y + tip.offsetHeight > window.innerHeight)
+            y = r.top - tip.offsetHeight - 6;
+        tip.style.left = Math.max(4, x) + 'px';
+        tip.style.top = Math.max(4, y) + 'px';
+    }
+
+    function hideTip() {
+        if (tip) tip.style.display = 'none';
+    }
+
+    window.__idaSlidesPreview = function (id, key, text) {
+        previewCache[key] = text;
+        if (hoverEl && hoverEl.__idaReq === id && text)
+            showTip(hoverEl, text);
+    };
+
+    document.addEventListener('mouseover', function (ev) {
+        var a = ev.target && ev.target.closest ?
+            ev.target.closest('a.ida-xref') : null;
+        if (!a) return;
+        hoverEl = a;
+        if (hoverTimer) clearTimeout(hoverTimer);
+        hoverTimer = setTimeout(function () {
+            if (hoverEl !== a) return;
+            var name = a.getAttribute('data-ida-name');
+            var line = a.getAttribute('data-ida-line') || '';
+            var key = name + ':' + line;
+            if (previewCache[key] !== undefined) {
+                if (previewCache[key]) showTip(a, previewCache[key]);
+                return;
+            }
+            var id = String(++previewSeq);
+            a.__idaReq = id;
+            window.webkit.messageHandlers.ida.postMessage(
+                {type: 'preview', name: name, line: line, id: id, key: key});
+        }, 250);
+    }, true);
+
+    document.addEventListener('mouseout', function (ev) {
+        var a = ev.target && ev.target.closest ?
+            ev.target.closest('a.ida-xref') : null;
+        if (!a) return;
+        if (hoverTimer) clearTimeout(hoverTimer);
+        if (hoverEl === a) hoverEl = null;
+        hideTip();
+    }, true);
+
     document.addEventListener('click', function (ev) {
         var t = ev.target;
         if (!t || !t.closest) return;
@@ -181,6 +252,7 @@ USER_JS = r"""
         if (xref) {
             ev.preventDefault();
             ev.stopPropagation();
+            hideTip();
             window.webkit.messageHandlers.ida.postMessage(
                 {type: 'jump', name: xref.getAttribute('data-ida-name'),
                  line: xref.getAttribute('data-ida-line')});
@@ -304,15 +376,18 @@ def _make_objc_classes():
     # so a plugin upgrade in a running IDA still gets the new behavior.
     try:
         _classes = (
-            objc.lookUpClass("IdaSlidesMsgHandlerV3"),
-            objc.lookUpClass("IdaSlidesNavDelegateV3"),
+            objc.lookUpClass("IdaSlidesMsgHandlerV4"),
+            objc.lookUpClass("IdaSlidesNavDelegateV4"),
         )
         return _classes
     except objc.nosuchclass_error:
         pass
 
-    class IdaSlidesMsgHandlerV3(AppKit.NSObject):
+    class IdaSlidesMsgHandlerV4(AppKit.NSObject):
         """WKScriptMessageHandler — plain args, no blocks. Never raises."""
+
+        def setOwner_(self, owner):
+            self._owner = owner
 
         def userContentController_didReceiveScriptMessage_(self, ucc, message):
             try:
@@ -331,6 +406,22 @@ def _make_objc_classes():
                         QTimer.singleShot(
                             0, lambda n=name, l=line: _safe_jump(n, l)
                         )
+                elif kind == "preview":
+                    owner = getattr(self, "_owner", None)
+                    name = str(body.get("name") or "")
+                    line_v = body.get("line")
+                    try:
+                        line = int(str(line_v)) if line_v else None
+                    except (TypeError, ValueError):
+                        line = None
+                    req_id = str(body.get("id") or "")
+                    key = str(body.get("key") or "")
+                    if owner is not None and name:
+                        QTimer.singleShot(
+                            0,
+                            lambda o=owner, n=name, l=line, r=req_id, k=key:
+                                o.deliver_preview(n, l, r, k),
+                        )
                 elif kind == "ext":
                     url = str(body.get("url") or "")
                     if url:
@@ -338,7 +429,7 @@ def _make_objc_classes():
             except Exception:
                 logger.exception("script message handler failed")
 
-    class IdaSlidesNavDelegateV3(AppKit.NSObject):
+    class IdaSlidesNavDelegateV4(AppKit.NSObject):
         """Implements ONLY the block-free didFinish callback."""
 
         def setOwner_(self, owner):
@@ -352,7 +443,7 @@ def _make_objc_classes():
             except Exception:
                 logger.exception("didFinishNavigation handler failed")
 
-    _classes = (IdaSlidesMsgHandlerV3, IdaSlidesNavDelegateV3)
+    _classes = (IdaSlidesMsgHandlerV4, IdaSlidesNavDelegateV4)
     return _classes
 
 
@@ -415,6 +506,7 @@ class MarpWebKitView(QWidget):
             conf = WebKit.WKWebViewConfiguration.alloc().init()
             ucc = conf.userContentController()
             self._msg_handler = msg_cls.alloc().init()
+            self._msg_handler.setOwner_(self)
             ucc.addScriptMessageHandler_name_(self._msg_handler, "ida")
             script = WebKit.WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
                 USER_JS, WebKit.WKUserScriptInjectionTimeAtDocumentEnd, True
@@ -507,6 +599,11 @@ class MarpWebKitView(QWidget):
             except Exception:
                 logger.exception("message handler teardown failed")
             self._ucc = None
+        if self._msg_handler is not None:
+            try:
+                self._msg_handler.setOwner_(None)
+            except Exception:
+                pass
         if self._web is not None:
             try:
                 self._web.setNavigationDelegate_(None)
@@ -786,6 +883,28 @@ class MarpWebKitView(QWidget):
                 QTimer.singleShot(0, lambda: self.load(self._path))
         except Exception:
             logger.exception("hash-capture completion failed")
+
+    def deliver_preview(
+        self, name: str, line: int | None, req_id: str, key: str
+    ) -> None:
+        """Answer a hover-preview request from the page's JS."""
+        if self._web is None:
+            return
+        try:
+            import deck_preprocess
+
+            text = deck_preprocess.preview_text(name, line)
+        except Exception:
+            logger.exception("preview failed for %s", name)
+            text = ""
+        js = (
+            f"window.__idaSlidesPreview({json.dumps(req_id)}, "
+            f"{json.dumps(key)}, {json.dumps(text)})"
+        )
+        try:
+            self._web.evaluateJavaScript_completionHandler_(js, None)
+        except Exception:
+            logger.exception("preview delivery failed")
 
     def on_load_finished(self) -> None:
         """Called (via QTimer) after didFinishNavigation."""

@@ -71,6 +71,33 @@ def decompile_lines(
     return raw[lo - 1 : hi], None
 
 
+def preview_text(name: str, line: int | None = None, context: int = 8) -> str:
+    """Short pseudocode excerpt for hover tooltips.
+
+    Without a line: the first `context` lines. With one: a window around it,
+    the target marked with ►.
+    """
+    if line is not None:
+        start = max(1, line - 2)
+        end = start + context - 1
+    else:
+        start, end = 1, context
+
+    lines, err = decompile_lines(name, start, end)
+    if err is not None:
+        return f"⚠ {name}: {err}"
+
+    out = []
+    for i, text in enumerate(lines):
+        if line is not None:
+            out.append(("► " if start + i == line else "  ") + text)
+        else:
+            out.append(text)
+    if len(lines) >= end - start + 1:
+        out.append("…")
+    return "\n".join(out)
+
+
 def _render_embed(match: re.Match) -> str:
     auto = bool(match.group(1))
     name = match.group(2)

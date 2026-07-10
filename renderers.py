@@ -48,6 +48,7 @@ class SlideView(QWidget):
         self._browser.setOpenLinks(False)
         self._browser.setOpenExternalLinks(False)
         self._browser.anchorClicked.connect(self._on_anchor_clicked)
+        self._browser.highlighted.connect(self._on_anchor_hovered)
         self._browser.installEventFilter(self)
 
         self._last_auto_index: int | None = None
@@ -142,6 +143,31 @@ class SlideView(QWidget):
                     self._render()
                     return True
         return super().eventFilter(obj, event)
+
+    def _on_anchor_hovered(self, url: QUrl) -> None:
+        import html as html_mod
+
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QToolTip
+
+        target = ida_links.name_from_url(url) if not url.isEmpty() else None
+        if target is None:
+            QToolTip.hideText()
+            return
+        name, line = target
+        try:
+            import deck_preprocess
+
+            text = deck_preprocess.preview_text(name, line)
+        except Exception:
+            logger.exception("preview failed for %s", name)
+            return
+        if text:
+            QToolTip.showText(
+                QCursor.pos(),
+                f"<pre>{html_mod.escape(text)}</pre>",
+                self._browser,
+            )
 
     def _on_anchor_clicked(self, url: QUrl) -> None:
         target = ida_links.name_from_url(url)
