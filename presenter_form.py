@@ -40,6 +40,8 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
         self._renderer_kind: str | None = None
         self._layout: QVBoxLayout | None = None
         self._status: QLabel | None = None
+        self._status_base = ""
+        self._last_lint: list[tuple[int, str]] | None = None
 
     # ------------------------------------------------------------------
     # Singleton entry points
@@ -108,18 +110,6 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
         browser_act = QAction("Open in Browser", parent)
         browser_act.triggered.connect(self._on_open_browser_clicked)
         toolbar.addAction(browser_act)
-
-        import ida_links
-
-        follow_act = QAction("Follow @!", parent)
-        follow_act.setCheckable(True)
-        follow_act.setChecked(ida_links.follow_enabled())
-        follow_act.setToolTip(
-            "Presenter follow: auto-jump IDA to @! tokens when their slide "
-            "becomes visible"
-        )
-        follow_act.toggled.connect(ida_links.set_follow_enabled)
-        toolbar.addAction(follow_act)
 
         toolbar.addSeparator()
         self._status = QLabel("", parent)
@@ -221,14 +211,14 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
         if self._watcher is not None:
             self._watcher.watch(path)
         self._renderer.load(path)
-        if self._status is not None:
-            if kind == "webkit":
-                label = f"{self._renderer.engine_label}/WebKit"
-            elif kind == "web":
-                label = "Marp/WebEngine"
-            else:
-                label = "basic"
-            self._status.setText(f"{os.path.basename(path)}  [{label}]")
+        if kind == "webkit":
+            label = f"{self._renderer.engine_label}/WebKit"
+        elif kind == "web":
+            label = "Marp/WebEngine"
+        else:
+            label = "basic"
+        self._status_base = f"{os.path.basename(path)}  [{label}]"
+        self._refresh_status()
 
     # ------------------------------------------------------------------
     # Toolbar handlers
@@ -241,10 +231,53 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
     def _on_reload_clicked(self) -> None:
         if self._renderer is not None:
             self._renderer.reload()
+            self._refresh_status()
 
     def _on_open_browser_clicked(self) -> None:
         if self._path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(self._path))
+
+    # ------------------------------------------------------------------
+    # Reference lint
+    # ------------------------------------------------------------------
+    def _refresh_status(self) -> None:
+        """Show the deck label plus a warning when @references are broken."""
+        issues = self._lint_refs()
+        if self._status is None:
+            return
+        text = self._status_base
+        if issues:
+            text += f"   ⚠ {len(issues)} unresolved @ref(s)"
+            self._status.setToolTip(
+                "\n".join(f"{tok} — slide {n}" for n, tok in issues)
+            )
+        else:
+            self._status.setToolTip("")
+        self._status.setText(text)
+
+    def _lint_refs(self) -> list[tuple[int, str]]:
+        """Check every @reference in the deck against the open IDB."""
+        if (
+            not self._path
+            or os.path.splitext(self._path)[1].lower() not in _MD_EXTS
+        ):
+            return []
+        try:
+            import deck_preprocess
+
+            with open(self._path, encoding="utf-8", errors="replace") as fh:
+                issues = deck_preprocess.unresolved_refs(fh.read())
+        except Exception:
+            logger.exception("reference lint failed for %s", self._path)
+            return []
+        if issues and issues != self._last_lint:
+            listing = ", ".join(f"{tok} (slide {n})" for n, tok in issues)
+            ida_kernwin.msg(
+                f"ida-slides: {len(issues)} unresolved @reference(s): "
+                f"{listing}\n"
+            )
+        self._last_lint = issues
+        return issues
 
     def _on_file_changed(self, path: str) -> None:
         if path != self._path or self._renderer is None:
@@ -255,3 +288,4 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
             handler()
         else:
             self._renderer.reload()
+        self._refresh_status()

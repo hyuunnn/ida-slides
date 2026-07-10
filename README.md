@@ -62,12 +62,6 @@ can also be opened directly.
 | `@main[7]` | just pseudocode line 7 |
 | `@main[]` | the whole decompiled function |
 | `@main[1:8@5]` | lines 1–8 with line 5 marked `►` |
-| `@!main:12` | **presenter follow**: IDA jumps there by itself the moment this slide is shown (still clickable) |
-| `@!main[1:8@5]` | embed + `►` mark + auto-jump to line 5 on slide entry |
-
-Presenter follow is per-token (`!`), so you decide exactly where the deck
-drives IDA and where it waits for a click. The **Follow @!** toolbar toggle
-turns all auto-jumps on/off — e.g. off while editing, on while presenting.
 
 Hover any `@` link to preview its decompiled code in a tooltip (a few lines,
 with `►` on the `:line` target) without leaving the slide — handy for
@@ -78,14 +72,20 @@ rename or re-analysis is reflected the next time you save. Unknown names are
 reported in IDA's output window when clicked (the built-in fallback viewer
 dims them instead).
 
+Every load and save also lints the whole deck against the open IDB: if any
+`@reference` no longer resolves (renamed function, wrong IDB open), the
+toolbar status shows `⚠ N unresolved @ref(s)` — hover it for the list, or
+see the Output window — so you catch broken references before the talk, not
+during it.
+
 Going the other way: right-click in the disassembly, pseudocode, or hex view
 and pick **Copy @reference** — the token for that spot lands on the
 clipboard, ready to paste into your deck. Select several pseudocode lines
 first and it captures the range as an embed token `@name[lo:hi]`; otherwise
 it copies `@name:line` (pseudocode), `@name`, or `@0xADDR` for unnamed bytes.
 
-After a jump — clicked or auto-followed — keyboard focus returns to the deck,
-so you keep driving slides with the arrow keys without clicking back in.
+Jumps never take keyboard focus away from the deck, so you keep driving
+slides with the arrow keys without clicking back in.
 
 ## Writing decks
 

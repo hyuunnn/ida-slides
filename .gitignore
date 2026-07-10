@@ -222,3 +222,4 @@ __marimo__/
 examples/*.html
 .*.ida-slides.md
 .*.ida-slides.html
+examples/node_modules/

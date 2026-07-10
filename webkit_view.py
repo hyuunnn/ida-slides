@@ -59,7 +59,7 @@ USER_JS = r"""
     if (window.__idaPptHooked) return;
     window.__idaPptHooked = true;
 
-    var RE = /@(!?)(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)(?::(\d+))?/g;
+    var RE = /@(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)(?::(\d+))?/g;
 
     function addStyle() {
         if (!document.head || document.getElementById('ida-xref-style')) return;
@@ -70,7 +70,6 @@ USER_JS = r"""
             'border-radius:3px;padding:0 .15em;text-decoration:none;' +
             'font-family:monospace;cursor:pointer;}' +
             'a.ida-xref:hover{background:rgba(78,161,255,.35);}' +
-            'a.ida-xref[data-ida-auto]{border-bottom:2px solid #4ea1ff;}' +
             '.ida-tip{position:fixed;z-index:2147483647;max-width:64ch;' +
             'background:#1d232f;color:#c9d4e4;border:1px solid #3a4558;' +
             'border-radius:6px;padding:8px 10px;font-family:ui-monospace,' +
@@ -98,64 +97,24 @@ USER_JS = r"""
                 return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c];
             });
             RE.lastIndex = 0;
-            span.innerHTML = escaped.replace(RE, function (m, bang, name, line) {
+            span.innerHTML = escaped.replace(RE, function (m, name, line, offset, str) {
+                var prev = offset > 0 ? str.charAt(offset - 1) : '';
+                if (/[A-Za-z0-9_@]/.test(prev)) return m;   // user@host etc.
                 var trail = '';
                 while (name.length && name.slice(-1) === '.') {
                     name = name.slice(0, -1);
                     trail += '.';
                 }
                 if (!name.length) return m;
-                var label = '@' + bang + name + (line ? ':' + line : '');
+                var label = '@' + name + (line ? ':' + line : '');
                 return '<a class="ida-xref" data-ida-name="' + name + '"' +
-                    (line ? ' data-ida-line="' + line + '"' : '') +
-                    (bang ? ' data-ida-auto="1"' : '') + '>' +
+                    (line ? ' data-ida-line="' + line + '"' : '') + '>' +
                     label + '</a>' + trail;
             });
             n.parentNode.replaceChild(span, n);
         });
         return targets.length;
     }
-
-    // ---- presenter follow: auto-jump to the visible @! token -------------
-    var lastAutoKey = null;
-
-    function isVisible(el) {
-        if (el.checkVisibility)
-            return el.checkVisibility({visibilityProperty: true,
-                                       opacityProperty: true});
-        return el.offsetParent !== null;
-    }
-
-    function fireAuto() {
-        var els = document.querySelectorAll('a.ida-xref[data-ida-auto]');
-        for (var i = 0; i < els.length; i++) {
-            if (!isVisible(els[i])) continue;
-            var el = els[i];
-            var key = location.href + '|' + el.getAttribute('data-ida-name') +
-                ':' + (el.getAttribute('data-ida-line') || '');
-            if (key === lastAutoKey) return;
-            lastAutoKey = key;
-            window.webkit.messageHandlers.ida.postMessage(
-                {type: 'jump', name: el.getAttribute('data-ida-name'),
-                 line: el.getAttribute('data-ida-line'), auto: '1'});
-            return;
-        }
-    }
-
-    window.addEventListener('hashchange', function () {
-        setTimeout(fireAuto, 80);            // Marp/Bespoke slide changes
-    });
-    ['pushState', 'replaceState'].forEach(function (k) {
-        var orig = history[k];
-        history[k] = function () {           // Slidev SPA route changes
-            var r = orig.apply(this, arguments);
-            setTimeout(fireAuto, 120);
-            return r;
-        };
-    });
-    window.addEventListener('popstate', function () {
-        setTimeout(fireAuto, 120);
-    });
 
     var observer = null;
     var scheduled = false;
@@ -168,7 +127,6 @@ USER_JS = r"""
         if (observer && document.body)
             observer.observe(document.body,
                              {childList: true, subtree: true, characterData: true});
-        fireAuto();   // covers initial load and Slidev slide mounts
     }
 
     function schedule() {
@@ -403,8 +361,6 @@ def _make_objc_classes():
                 body = message.body()
                 kind = str(body.get("type") or "")
                 if kind == "jump":
-                    if body.get("auto") and not ida_links.follow_enabled():
-                        return
                     owner = getattr(self, "_owner", None)
                     name = str(body.get("name") or "")
                     line_v = body.get("line")
@@ -896,12 +852,12 @@ class MarpWebKitView(QWidget):
             logger.exception("hash-capture completion failed")
 
     def do_jump(self, name: str, line: int | None) -> None:
-        """Navigate IDA, then hand keyboard focus back to the deck so the
-        presenter can keep driving slides with the arrow keys."""
+        """Navigate IDA without losing keyboard control of the deck.
+        jump_to itself no longer leaves focus on the IDA view, but the
+        WKWebView is a native NSView that Qt does not track as a focus
+        child, so its first-responder status still needs a nudge."""
         _safe_jump(name, line)
-        # jumpto steals focus to the IDA view; restore it after the jump
-        # settles (its own positioning is deferred, so wait past that)
-        QTimer.singleShot(80, self._restore_focus)
+        self._restore_focus()
 
     def _restore_focus(self) -> None:
         import ida_kernwin

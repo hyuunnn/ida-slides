@@ -10,8 +10,6 @@ built-in viewer), so embeds work identically everywhere. Supported forms:
     @sub_401000[7]       line 7 only
     @sub_401000[]        the whole function
     @sub_401000[1:8@5]   lines 1-8 with line 5 marked (►)
-    @!sub_401000[1:8@5]  same, plus a @!name:5 presenter-follow caption so
-                         IDA auto-jumps there when the slide is shown
 
 Tokens inside fenced code blocks or inline backtick spans are left alone so
 decks can document the syntax itself.
@@ -28,7 +26,8 @@ _FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
 _INLINE_CODE_RE = re.compile(r"`[^`]*`")
 
 EMBED_RE = re.compile(
-    rf"@(!?)({ida_links._NAME_PATTERN})\[(\d*)(?::(\d*))?(?:@(\d+))?\]"
+    rf"(?<![A-Za-z0-9_@])@({ida_links._NAME_PATTERN})"
+    rf"\[(\d*)(?::(\d*))?(?:@(\d+))?\]"
 )
 
 
@@ -99,9 +98,8 @@ def preview_text(name: str, line: int | None = None, context: int = 8) -> str:
 
 
 def _render_embed(match: re.Match) -> str:
-    auto = bool(match.group(1))
-    name = match.group(2)
-    start_s, end_s, hl_s = match.group(3), match.group(4), match.group(5)
+    name = match.group(1)
+    start_s, end_s, hl_s = match.group(2), match.group(3), match.group(4)
 
     start = int(start_s) if start_s else None
     if end_s is not None:
@@ -134,12 +132,42 @@ def _render_embed(match: re.Match) -> str:
     else:
         header = f"// {name} [{start_s or 1}:{end_s if end_s else (end or '')}]"
     body = "\n".join(lines)
+    return f"\n```c\n{header}\n{body}\n```\n"
 
-    # the presenter-follow caption is a normal @! link, so the standard
-    # linkify/auto-jump machinery picks it up when the slide is shown
-    target = highlight if highlight is not None else lo
-    caption = f"\n@!{name}:{target}\n" if auto else ""
-    return f"\n{caption}\n```c\n{header}\n{body}\n```\n"
+
+def unresolved_refs(text: str) -> list[tuple[int, str]]:
+    """(slide_no, "@token") pairs whose names the open IDB can't resolve.
+
+    Slide numbers are 1-based and use the same splitting as the built-in
+    viewer, so they match the deck the presenter sees. Trailing dots are
+    trimmed the same way linkify does, so sentence punctuation after a
+    token isn't reported as part of the name.
+    """
+    import ida_idaapi
+    import ida_segment
+
+    import marp_markdown
+
+    def _ok(name: str) -> bool:
+        ea = ida_links.resolve_ea(name)
+        if ea == ida_idaapi.BADADDR:
+            return False
+        # raw hex parses unconditionally; only mapped addresses are jumpable
+        if name.lower().startswith("0x"):
+            return ida_segment.getseg(ea) is not None
+        return True
+
+    out: list[tuple[int, str]] = []
+    for idx, slide in enumerate(marp_markdown.parse_deck(text), start=1):
+        names = {m.group(1) for m in EMBED_RE.finditer(slide)}
+        for m in ida_links.TOKEN_RE.finditer(slide):
+            name = m.group(1)
+            while name.endswith(".") and not _ok(name):
+                name = name[:-1]
+            if name:
+                names.add(name)
+        out.extend((idx, f"@{n}") for n in sorted(names) if not _ok(n))
+    return out
 
 
 def _expand_line(line: str) -> str:

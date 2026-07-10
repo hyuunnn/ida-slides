@@ -51,8 +51,6 @@ class SlideView(QWidget):
         self._browser.highlighted.connect(self._on_anchor_hovered)
         self._browser.installEventFilter(self)
 
-        self._last_auto_index: int | None = None
-
         self._prev_btn = QToolButton(self)
         self._prev_btn.setText("◀")
         self._prev_btn.setAutoRepeat(True)
@@ -173,15 +171,9 @@ class SlideView(QWidget):
         target = ida_links.name_from_url(url)
         if target is not None:
             name, line = target
+            # jump_to never leaves focus on the IDA view, so arrow-key
+            # slide control stays here without any restore dance
             ida_links.jump_to(name, line)
-            # jumpto steals focus to the IDA view; keep arrow-key control here
-            from PySide6.QtCore import Qt as _Qt
-            from PySide6.QtCore import QTimer
-
-            QTimer.singleShot(
-                80,
-                lambda: self._browser.setFocus(_Qt.FocusReason.OtherFocusReason),
-            )
             return
         if url.scheme() in ("http", "https"):
             from PySide6.QtGui import QDesktopServices
@@ -245,29 +237,6 @@ class SlideView(QWidget):
         self._counter.setText(f"{self._index + 1} / {total}")
         self._prev_btn.setEnabled(self._index > 0)
         self._next_btn.setEnabled(self._index < total - 1)
-        self._fire_presenter_follow()
-
-    def _fire_presenter_follow(self) -> None:
-        """Auto-jump to the slide's first @! token when the slide changes."""
-        if self._index == self._last_auto_index:
-            return
-        self._last_auto_index = self._index
-        if not ida_links.follow_enabled():
-            return
-        for m in ida_links.TOKEN_RE.finditer(self._slides[self._index]):
-            if m.group(1):
-                line = int(m.group(3)) if m.group(3) else None
-                ida_links.jump_to(m.group(2), line)
-                from PySide6.QtCore import Qt as _Qt
-                from PySide6.QtCore import QTimer
-
-                QTimer.singleShot(
-                    80,
-                    lambda: self._browser.setFocus(
-                        _Qt.FocusReason.OtherFocusReason
-                    ),
-                )
-                return
 
 
 def create_web_slide_view(parent: QWidget | None = None) -> QWidget:

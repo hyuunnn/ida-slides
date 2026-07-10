@@ -19,22 +19,9 @@ IDA_URL_SCHEME = "ida"
 
 # @sub_401000, @main, @_Z3foov, @.init_proc, @0x401000
 # an optional :N suffix targets pseudocode line N (@sub_401000:22);
-# a ! marker (@!sub_401000:22) additionally auto-jumps when the slide
-# containing it becomes visible ("presenter follow")
+# the lookbehind keeps the @ in emails (user@host) from starting a token
 _NAME_PATTERN = r"0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*"
-TOKEN_RE = re.compile(rf"@(!?)({_NAME_PATTERN})(?::(\d+))?")
-
-# presenter-follow master switch, toggled from the form's toolbar
-_follow_enabled = True
-
-
-def set_follow_enabled(value: bool) -> None:
-    global _follow_enabled
-    _follow_enabled = bool(value)
-
-
-def follow_enabled() -> bool:
-    return _follow_enabled
+TOKEN_RE = re.compile(rf"(?<![A-Za-z0-9_@])@({_NAME_PATTERN})(?::(\d+))?")
 
 _TAG_SPLIT_RE = re.compile(r"(<[^>]*>)")
 
@@ -84,8 +71,29 @@ def jump_to(name: str, line: int | None = None) -> bool:
         ida_kernwin.msg(f"ida-slides: no such name/address: {name}\n")
         return False
     if line is None:
-        return ida_kernwin.jumpto(ea)
+        return _jump_no_focus(ea)
     return _jump_to_pseudocode_line(ea, line, name)
+
+
+def _jump_no_focus(ea: int) -> bool:
+    """jumpto without UIJMP_ACTIVATE, so keyboard focus (and arrow-key
+    slide control) stays on the presenter instead of the IDA view."""
+    import ida_kernwin
+
+    ok = ida_kernwin.jumpto(ea, -1, 0)
+    w = ida_kernwin.find_widget("IDA View-A")
+    if w is not None:
+        # a non-activating jump repositions a buried tab but does not
+        # raise it; raise explicitly while leaving focus alone
+        ida_kernwin.activate_widget(w, False)
+        return ok
+    # no default disasm view to surface — let an activating jump open
+    # one, then hand focus straight back to whoever had it
+    prev = ida_kernwin.get_current_widget()
+    ok = ida_kernwin.jumpto(ea)
+    if prev is not None:
+        ida_kernwin.activate_widget(prev, True)
+    return ok
 
 
 def _jump_to_pseudocode_line(ea: int, line: int, name: str) -> bool:
@@ -95,9 +103,14 @@ def _jump_to_pseudocode_line(ea: int, line: int, name: str) -> bool:
     try:
         import ida_hexrays
 
+        # open_pseudocode focuses the pseudocode view even when reusing
+        # an existing one; hand focus straight back to the deck
+        prev = ida_kernwin.get_current_widget()
         vu = ida_hexrays.open_pseudocode(ea, ida_hexrays.OPF_REUSE)
         if vu is None:
             raise RuntimeError("open_pseudocode failed")
+        if prev is not None:
+            ida_kernwin.activate_widget(prev, True)
         nlines = vu.cfunc.get_pseudocode().size()
         lnnum = min(max(line, 1), nlines) - 1
         ct = vu.ct
@@ -109,7 +122,10 @@ def _jump_to_pseudocode_line(ea: int, line: int, name: str) -> bool:
             # jump, which can land after ours and clobber it. We re-apply and
             # verify a few times until the caret sticks (or give up quietly).
             try:
-                ida_kernwin.activate_widget(ct, True)
+                # raise the pseudocode tab but keep keyboard focus on the
+                # deck (take_focus=False); the retry loop below would
+                # otherwise re-steal focus on every attempt
+                ida_kernwin.activate_widget(ct, False)
                 # simpleline_place_t's constructor is abstract in IDA 9.3's
                 # bindings; clone the viewer's place and cast it. NB: the cast
                 # returns a fresh proxy each call, so the object we mutate must
@@ -137,7 +153,7 @@ def _jump_to_pseudocode_line(ea: int, line: int, name: str) -> bool:
             f"ida-slides: cannot open pseudocode for {name}; "
             "jumping to the function instead\n"
         )
-        return ida_kernwin.jumpto(ea)
+        return _jump_no_focus(ea)
 
 
 def linkify_html(
@@ -156,9 +172,8 @@ def linkify_html(
     """
 
     def _sub(m: re.Match) -> str:
-        bang = m.group(1)
-        name = m.group(2)
-        line = int(m.group(3)) if m.group(3) else None
+        name = m.group(1)
+        line = int(m.group(2)) if m.group(2) else None
         # trailing dots are almost always sentence punctuation, not part of
         # the name ("... @main. Next ...")
         trail = ""
@@ -167,7 +182,7 @@ def linkify_html(
             trail += "."
         if not name:
             return m.group(0)
-        token = "@" + bang + name + (f":{line}" if line else "")
+        token = "@" + name + (f":{line}" if line else "")
         if is_resolved(name):
             return (
                 f'<a href="{make_href(name, line)}" style="'
@@ -194,7 +209,7 @@ LINKIFY_JS = r"""
     if (window.__idaPptLinkified) return;
     window.__idaPptLinkified = true;
 
-    var RE = /@(!?)(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)(?::(\d+))?/g;
+    var RE = /@(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)(?::(\d+))?/g;
 
     var style = document.createElement('style');
     style.textContent =
@@ -218,14 +233,16 @@ LINKIFY_JS = r"""
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c];
         });
         RE.lastIndex = 0;
-        span.innerHTML = escaped.replace(RE, function (m, bang, name, line) {
+        span.innerHTML = escaped.replace(RE, function (m, name, line, offset, str) {
+            var prev = offset > 0 ? str.charAt(offset - 1) : '';
+            if (/[A-Za-z0-9_@]/.test(prev)) return m;   // user@host etc.
             var trail = '';
             while (name.length && name.slice(-1) === '.') {
                 name = name.slice(0, -1);
                 trail += '.';
             }
             if (!name.length) return m;
-            var label = '@' + bang + name + (line ? ':' + line : '');
+            var label = '@' + name + (line ? ':' + line : '');
             return '<a class="ida-xref" href="ida:///' +
                 encodeURIComponent(name) + (line ? ':' + line : '') +
                 '">' + label + '</a>' + trail;
