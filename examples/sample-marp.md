@@ -40,8 +40,20 @@ that jumps the disassembly view:
 - Function by name: @main or @sub_401000
 - Raw address: @0x401000
 - Works inline in code too: `call @sub_401000`
+- Add `:N` to land on a pseudocode line: @main:12
 
 Unknown names render dimmed instead of linked: @no_such_name_here
+
+---
+
+## Embedded pseudocode
+
+Write `@name[a:b]` and ida-slides drops the decompiled lines a–b right
+into the slide — refreshed from the IDB every time you save:
+
+@main[1:8]
+
+Use `@name[7]` for a single line or `@name[]` for the whole function.
 
 ---
 

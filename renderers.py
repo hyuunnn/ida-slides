@@ -86,6 +86,13 @@ class SlideView(QWidget):
             ida_kernwin.warning(f"ida-slides: cannot read {path}:\n{exc}")
             return
 
+        try:
+            import deck_preprocess
+
+            text = deck_preprocess.expand_embeds(text)
+        except Exception:
+            logger.exception("embed preprocessing failed")
+
         keep_position = path == self._path
         self._path = path
         self._slides = marp_markdown.parse_deck(text)
@@ -135,9 +142,10 @@ class SlideView(QWidget):
         return super().eventFilter(obj, event)
 
     def _on_anchor_clicked(self, url: QUrl) -> None:
-        name = ida_links.name_from_url(url)
-        if name is not None:
-            ida_links.jump_to(name)
+        target = ida_links.name_from_url(url)
+        if target is not None:
+            name, line = target
+            ida_links.jump_to(name, line)
             return
         if url.scheme() in ("http", "https"):
             from PySide6.QtGui import QDesktopServices
@@ -210,9 +218,10 @@ def create_web_slide_view(parent: QWidget | None = None) -> QWidget:
 
     class _IdaNavPage(QWebEnginePage):
         def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame):
-            name = ida_links.name_from_url(url)
-            if name is not None:
-                ida_links.jump_to(name)
+            target = ida_links.name_from_url(url)
+            if target is not None:
+                name, line = target
+                ida_links.jump_to(name, line)
                 return False
             return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 

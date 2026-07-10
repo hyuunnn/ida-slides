@@ -26,3 +26,13 @@ Same as the Marp engine — `@` + any IDA name or address jumps the view:
 - Function by name: @main or @sub_401000
 - Raw address: @0x401000
 - Inline code too: `call @sub_401000`
+- Pseudocode line: @main:12
+
+---
+
+## Embedded pseudocode
+
+`@name[a:b]` embeds decompiled lines a–b, refreshed on every save
+(Vite HMR applies it instantly):
+
+@main[1:8]

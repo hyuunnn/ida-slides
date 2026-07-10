@@ -18,22 +18,29 @@ logger = logging.getLogger(__name__)
 IDA_URL_SCHEME = "ida"
 
 # @sub_401000, @main, @_Z3foov, @.init_proc, @0x401000
+# an optional :N suffix targets pseudocode line N (@sub_401000:22)
 _NAME_PATTERN = r"0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*"
-TOKEN_RE = re.compile(rf"@({_NAME_PATTERN})")
+TOKEN_RE = re.compile(rf"@({_NAME_PATTERN})(?::(\d+))?")
 
 _TAG_SPLIT_RE = re.compile(r"(<[^>]*>)")
 
 
-def make_href(name: str) -> str:
-    return f"{IDA_URL_SCHEME}:///{urllib.parse.quote(name, safe='')}"
+def make_href(name: str, line: int | None = None) -> str:
+    href = f"{IDA_URL_SCHEME}:///{urllib.parse.quote(name, safe='')}"
+    return f"{href}:{line}" if line else href
 
 
-def name_from_url(url) -> str | None:
-    """Extract the IDA name from a QUrl if it is an ida:/// link, else None."""
+def name_from_url(url) -> tuple[str, int | None] | None:
+    """Extract (name, line) from a QUrl if it is an ida:/// link, else None."""
     if url.scheme() != IDA_URL_SCHEME:
         return None
-    name = urllib.parse.unquote(url.path().lstrip("/"))
-    return name or None
+    spec = urllib.parse.unquote(url.path().lstrip("/"))
+    if not spec:
+        return None
+    name, _, line_s = spec.rpartition(":")
+    if name and line_s.isdigit():
+        return name, int(line_s)
+    return spec, None
 
 
 def resolve_ea(name: str) -> int:
@@ -54,7 +61,7 @@ def is_resolvable(name: str) -> bool:
     return resolve_ea(name) != ida_idaapi.BADADDR
 
 
-def jump_to(name: str) -> bool:
+def jump_to(name: str, line: int | None = None) -> bool:
     import ida_idaapi
     import ida_kernwin
 
@@ -62,7 +69,61 @@ def jump_to(name: str) -> bool:
     if ea == ida_idaapi.BADADDR:
         ida_kernwin.msg(f"ida-slides: no such name/address: {name}\n")
         return False
-    return ida_kernwin.jumpto(ea)
+    if line is None:
+        return ida_kernwin.jumpto(ea)
+    return _jump_to_pseudocode_line(ea, line, name)
+
+
+def _jump_to_pseudocode_line(ea: int, line: int, name: str) -> bool:
+    """Open the decompiler view for `ea` positioned at 1-indexed `line`."""
+    import ida_kernwin
+
+    try:
+        import ida_hexrays
+
+        vu = ida_hexrays.open_pseudocode(ea, ida_hexrays.OPF_REUSE)
+        if vu is None:
+            raise RuntimeError("open_pseudocode failed")
+        nlines = vu.cfunc.get_pseudocode().size()
+        lnnum = min(max(line, 1), nlines) - 1
+        ct = vu.ct
+
+        from PySide6.QtCore import QTimer
+
+        def _position(attempt: int = 0) -> None:
+            # Opening a *different* function queues Hex-Rays' own entry-point
+            # jump, which can land after ours and clobber it. We re-apply and
+            # verify a few times until the caret sticks (or give up quietly).
+            try:
+                ida_kernwin.activate_widget(ct, True)
+                # simpleline_place_t's constructor is abstract in IDA 9.3's
+                # bindings; clone the viewer's place and cast it. NB: the cast
+                # returns a fresh proxy each call, so the object we mutate must
+                # be the one we hand to jumpto — mutating a throwaway is a no-op.
+                clone = ida_kernwin.get_custom_viewer_place(ct, False)[0].clone()
+                sp = ida_kernwin.place_t_as_simpleline_place_t(clone)
+                sp.n = lnnum
+                ida_kernwin.jumpto(ct, sp, 0, 0)
+
+                cur, _x, _y = ida_kernwin.get_custom_viewer_place(ct, False)
+                landed = ida_kernwin.place_t_as_simpleline_place_t(cur).n
+                if landed != lnnum and attempt < 6:
+                    QTimer.singleShot(60, lambda: _position(attempt + 1))
+            except Exception:
+                if attempt < 6:
+                    QTimer.singleShot(60, lambda: _position(attempt + 1))
+                else:
+                    logger.exception("pseudocode line positioning failed")
+
+        QTimer.singleShot(60, _position)
+        return True
+    except Exception:
+        logger.exception("pseudocode line jump failed for %s:%d", name, line)
+        ida_kernwin.msg(
+            f"ida-slides: cannot open pseudocode for {name}; "
+            "jumping to the function instead\n"
+        )
+        return ida_kernwin.jumpto(ea)
 
 
 def linkify_html(
@@ -82,6 +143,7 @@ def linkify_html(
 
     def _sub(m: re.Match) -> str:
         name = m.group(1)
+        line = int(m.group(2)) if m.group(2) else None
         # trailing dots are almost always sentence punctuation, not part of
         # the name ("... @main. Next ...")
         trail = ""
@@ -90,10 +152,10 @@ def linkify_html(
             trail += "."
         if not name:
             return m.group(0)
-        token = "@" + name
+        token = "@" + name + (f":{line}" if line else "")
         if is_resolved(name):
             return (
-                f'<a href="{make_href(name)}" style="'
+                f'<a href="{make_href(name, line)}" style="'
                 f"color:{link_color}; background-color:{link_bg}; "
                 f'text-decoration:none; font-family:monospace;">{token}</a>{trail}'
             )
@@ -117,7 +179,7 @@ LINKIFY_JS = r"""
     if (window.__idaPptLinkified) return;
     window.__idaPptLinkified = true;
 
-    var RE = /@(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)/g;
+    var RE = /@(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)(?::(\d+))?/g;
 
     var style = document.createElement('style');
     style.textContent =
@@ -141,15 +203,17 @@ LINKIFY_JS = r"""
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c];
         });
         RE.lastIndex = 0;
-        span.innerHTML = escaped.replace(RE, function (m, name) {
+        span.innerHTML = escaped.replace(RE, function (m, name, line) {
             var trail = '';
             while (name.length && name.slice(-1) === '.') {
                 name = name.slice(0, -1);
                 trail += '.';
             }
             if (!name.length) return m;
+            var label = '@' + name + (line ? ':' + line : '');
             return '<a class="ida-xref" href="ida:///' +
-                encodeURIComponent(name) + '">@' + name + '</a>' + trail;
+                encodeURIComponent(name) + (line ? ':' + line : '') +
+                '">' + label + '</a>' + trail;
         });
         n.parentNode.replaceChild(span, n);
     });

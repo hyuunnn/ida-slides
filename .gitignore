@@ -220,4 +220,5 @@ __marimo__/
 # ida-slides
 .DS_Store
 examples/*.html
+.*.ida-slides.md
 .*.ida-slides.html

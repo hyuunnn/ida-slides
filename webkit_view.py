@@ -59,7 +59,7 @@ USER_JS = r"""
     if (window.__idaPptHooked) return;
     window.__idaPptHooked = true;
 
-    var RE = /@(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)/g;
+    var RE = /@(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)(?::(\d+))?/g;
 
     function addStyle() {
         if (!document.head || document.getElementById('ida-xref-style')) return;
@@ -91,15 +91,17 @@ USER_JS = r"""
                 return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c];
             });
             RE.lastIndex = 0;
-            span.innerHTML = escaped.replace(RE, function (m, name) {
+            span.innerHTML = escaped.replace(RE, function (m, name, line) {
                 var trail = '';
                 while (name.length && name.slice(-1) === '.') {
                     name = name.slice(0, -1);
                     trail += '.';
                 }
                 if (!name.length) return m;
-                return '<a class="ida-xref" data-ida-name="' + name + '">@' +
-                    name + '</a>' + trail;
+                var label = '@' + name + (line ? ':' + line : '');
+                return '<a class="ida-xref" data-ida-name="' + name + '"' +
+                    (line ? ' data-ida-line="' + line + '"' : '') + '>' +
+                    label + '</a>' + trail;
             });
             n.parentNode.replaceChild(span, n);
         });
@@ -136,7 +138,8 @@ USER_JS = r"""
             ev.preventDefault();
             ev.stopPropagation();
             window.webkit.messageHandlers.ida.postMessage(
-                {type: 'jump', name: xref.getAttribute('data-ida-name')});
+                {type: 'jump', name: xref.getAttribute('data-ida-name'),
+                 line: xref.getAttribute('data-ida-line')});
             return;
         }
         var a = t.closest('a[href]');
@@ -222,9 +225,9 @@ def webkit_available() -> bool:
     return True
 
 
-def _safe_jump(name: str) -> None:
+def _safe_jump(name: str, line: int | None = None) -> None:
     try:
-        ida_links.jump_to(name)
+        ida_links.jump_to(name, line)
     except Exception:
         logger.exception("jump failed for %s", name)
 
@@ -253,17 +256,18 @@ def _make_objc_classes():
 
     # the ObjC runtime forbids redefining a class name; after a module
     # reload (plugin update, dev iteration) reuse the already-registered
-    # classes — their implementations are functionally identical
+    # classes. The V-suffix is bumped whenever their implementation changes
+    # so a plugin upgrade in a running IDA still gets the new behavior.
     try:
         _classes = (
-            objc.lookUpClass("IdaPptMsgHandler"),
-            objc.lookUpClass("IdaPptNavDelegate"),
+            objc.lookUpClass("IdaSlidesMsgHandlerV2"),
+            objc.lookUpClass("IdaSlidesNavDelegateV2"),
         )
         return _classes
     except objc.nosuchclass_error:
         pass
 
-    class IdaPptMsgHandler(AppKit.NSObject):
+    class IdaSlidesMsgHandlerV2(AppKit.NSObject):
         """WKScriptMessageHandler — plain args, no blocks. Never raises."""
 
         def userContentController_didReceiveScriptMessage_(self, ucc, message):
@@ -272,8 +276,15 @@ def _make_objc_classes():
                 kind = str(body.get("type") or "")
                 if kind == "jump":
                     name = str(body.get("name") or "")
+                    line_v = body.get("line")
+                    try:
+                        line = int(str(line_v)) if line_v else None
+                    except (TypeError, ValueError):
+                        line = None
                     if name:
-                        QTimer.singleShot(0, lambda n=name: _safe_jump(n))
+                        QTimer.singleShot(
+                            0, lambda n=name, l=line: _safe_jump(n, l)
+                        )
                 elif kind == "ext":
                     url = str(body.get("url") or "")
                     if url:
@@ -281,7 +292,7 @@ def _make_objc_classes():
             except Exception:
                 logger.exception("script message handler failed")
 
-    class IdaPptNavDelegate(AppKit.NSObject):
+    class IdaSlidesNavDelegateV2(AppKit.NSObject):
         """Implements ONLY the block-free didFinish callback."""
 
         def setOwner_(self, owner):
@@ -295,7 +306,7 @@ def _make_objc_classes():
             except Exception:
                 logger.exception("didFinishNavigation handler failed")
 
-    _classes = (IdaPptMsgHandler, IdaPptNavDelegate)
+    _classes = (IdaSlidesMsgHandlerV2, IdaSlidesNavDelegateV2)
     return _classes
 
 
@@ -310,6 +321,7 @@ class MarpWebKitView(QWidget):
         super().__init__(parent)
         self._path: str | None = None            # file the user opened
         self._generated: str | None = None       # html we own and clean up
+        self._generated_md: str | None = None    # preprocessed md we own
         self._pending_hash: str | None = None
         self._web = None
         self._delegate = None
@@ -429,9 +441,13 @@ class MarpWebKitView(QWidget):
             self.load(self._path)
 
     def on_source_changed(self) -> None:
-        """The source file was saved. Slidev's HMR already handled it."""
-        if self._slidev_proc is None:
-            self.reload()
+        """The source file was saved."""
+        if self._slidev_proc is not None:
+            # regenerate the preprocessed deck; Slidev's HMR picks it up
+            if self._path:
+                self._prepare_md(self._path)
+            return
+        self.reload()
 
     def cleanup(self) -> None:
         """Detach the native view; call before the Qt widget goes away."""
@@ -455,6 +471,42 @@ class MarpWebKitView(QWidget):
         self._delegate = None
         self._msg_handler = None
         self._remove_generated()
+
+    # ------------------------------------------------------------------
+    # deck preprocessing (@name[a:b] pseudocode embeds)
+    # ------------------------------------------------------------------
+    def _prepare_md(self, md_path: str) -> str:
+        """Expand embed tokens into a hidden sibling md; returns its path.
+
+        Falls back to the original file when preprocessing fails. The file
+        is only rewritten when its content changes, so Slidev's HMR is not
+        triggered spuriously.
+        """
+        try:
+            import deck_preprocess
+
+            with open(md_path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            expanded = deck_preprocess.expand_embeds(text)
+        except Exception:
+            logger.exception("embed preprocessing failed for %s", md_path)
+            return md_path
+
+        stem = os.path.splitext(os.path.basename(md_path))[0]
+        out = os.path.join(os.path.dirname(md_path), f".{stem}.ida-slides.md")
+        try:
+            old = None
+            if os.path.exists(out):
+                with open(out, encoding="utf-8", errors="replace") as f:
+                    old = f.read()
+            if old != expanded:
+                with open(out, "w", encoding="utf-8") as f:
+                    f.write(expanded)
+        except OSError:
+            logger.exception("cannot write preprocessed deck %s", out)
+            return md_path
+        self._generated_md = out
+        return out
 
     # ------------------------------------------------------------------
     # process helpers
@@ -486,10 +538,12 @@ class MarpWebKitView(QWidget):
             and self._slidev_proc.state() == QProcess.ProcessState.Running
             and self._slidev_md == md_path
         ):
+            self._prepare_md(md_path)
             self._load_url(f"http://127.0.0.1:{self._slidev_port}/")
             return
 
         self._stop_slidev()
+        prepared = self._prepare_md(md_path)
 
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
@@ -498,7 +552,7 @@ class MarpWebKitView(QWidget):
         self._show_status("slidev starting…")
         proc = QProcess(self)
         proc.setProgram(slidev)
-        proc.setArguments([md_path, "--port", str(port), "--force"])
+        proc.setArguments([prepared, "--port", str(port), "--force"])
         proc.setStandardInputFile(QProcess.nullDevice())
         proc.setWorkingDirectory(os.path.dirname(md_path))
         proc.setProcessEnvironment(self._tool_env(slidev))
@@ -588,6 +642,7 @@ class MarpWebKitView(QWidget):
 
         stem = os.path.splitext(os.path.basename(md_path))[0]
         out = os.path.join(os.path.dirname(md_path), f".{stem}.ida-slides.html")
+        prepared = self._prepare_md(md_path)
 
         if self._proc is not None:
             self._proc.kill()
@@ -596,7 +651,7 @@ class MarpWebKitView(QWidget):
         self._show_status("marp rendering…")
         proc = QProcess(self)
         proc.setProgram(self._marp)
-        proc.setArguments([md_path, "-o", out, "--html"])
+        proc.setArguments([prepared, "-o", out, "--html"])
         # marp blocks reading stdin when it is a pipe
         proc.setStandardInputFile(QProcess.nullDevice())
         # marp's `#!/usr/bin/env node` shebang needs node on PATH, which a
@@ -639,12 +694,14 @@ class MarpWebKitView(QWidget):
         self._load_html(out)
 
     def _remove_generated(self) -> None:
-        if self._generated:
-            try:
-                os.remove(self._generated)
-            except OSError:
-                pass
-            self._generated = None
+        for attr in ("_generated", "_generated_md"):
+            path = getattr(self, attr)
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                setattr(self, attr, None)
 
     # ------------------------------------------------------------------
     # WKWebView loading

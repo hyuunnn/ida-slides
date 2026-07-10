@@ -52,19 +52,34 @@ can also be opened directly.
   (Marp syntax conventions, basic styling only). Needs the `markdown`
   package.
 
+## `@` reference syntax
+
+| Syntax | In a slide it becomes… |
+|--------|------------------------|
+| `@sub_401000` / `@main` / `@0x401000` | a link that jumps the disassembly view |
+| `@main:12` | a link that opens the pseudocode at line 12 |
+| `@main[1:8]` | the decompiled lines 1–8, embedded as a code block |
+| `@main[7]` | just pseudocode line 7 |
+| `@main[]` | the whole decompiled function |
+
+Line jumps (`:N`) and embeds (`[a:b]`) both read live from the IDB, so a
+rename or re-analysis is reflected the next time you save. Unknown names are
+reported in IDA's output window when clicked (the built-in fallback viewer
+dims them instead).
+
 ## Writing decks
 
 Each engine's standard conventions apply (front matter, `---` separators,
 themes, layouts). `@name` linkification runs on the rendered DOM — a
 MutationObserver keeps Slidev's dynamically mounted slides covered — so it
-works in body text and inline code alike; unknown names are reported in
-IDA's output window when clicked (the built-in fallback viewer dims them
-instead). See `examples/sample-marp.md` and `examples/sample-slidev.md`.
+works in body text and inline code alike. See `examples/sample-marp.md` and
+`examples/sample-slidev.md`.
 
-While rendering with Marp, a hidden `.<name>.ida-slides.html` file is written
-next to your `.md` (so relative image paths keep working); it is removed when
-the deck is closed. The Slidev dev server is stopped when the deck is closed
-or swapped.
+Before a deck reaches the engine, ida-slides preprocesses it into a hidden
+`.<name>.ida-slides.md` sibling (expanding `[a:b]` embeds); Marp additionally
+renders a `.<name>.ida-slides.html`. Both sit next to your `.md` so relative
+image paths keep working, and both are removed when the deck is closed. The
+Slidev dev server is stopped when the deck is closed or swapped.
 
 ## Install
 
