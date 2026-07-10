@@ -24,8 +24,31 @@ _WIDGET_TYPES = (
 )
 
 
+def _pseudocode_selection_lines(widget) -> tuple[int, int] | None:
+    """1-indexed (lo, hi) pseudocode line range of the current selection,
+    or None if there is no multi-line selection."""
+    try:
+        p1 = ida_kernwin.twinpos_t()
+        p2 = ida_kernwin.twinpos_t()
+        if not ida_kernwin.read_selection(widget, p1, p2):
+            return None
+        n1 = ida_kernwin.place_t_as_simpleline_place_t(p1.place(widget)).n
+        n2 = ida_kernwin.place_t_as_simpleline_place_t(p2.place(widget)).n
+        lo, hi = sorted((n1, n2))
+        if hi <= lo:
+            return None
+        return lo + 1, hi + 1
+    except Exception:
+        logger.exception("reading pseudocode selection failed")
+        return None
+
+
 def build_reference(widget, cur_ea: int) -> str | None:
-    """Compute the @token for a context-menu click in `widget` at `cur_ea`."""
+    """Compute the @token for a context-menu action in `widget` at `cur_ea`.
+
+    In pseudocode a multi-line selection becomes an embed token
+    `@name[lo:hi]`; a single line becomes `@name:line`.
+    """
     if ida_kernwin.get_widget_type(widget) == ida_kernwin.BWN_PSEUDOCODE:
         try:
             import ida_hexrays
@@ -34,6 +57,9 @@ def build_reference(widget, cur_ea: int) -> str | None:
             if vu is not None and vu.cfunc is not None:
                 name = ida_name.get_name(vu.cfunc.entry_ea)
                 if name:
+                    span = _pseudocode_selection_lines(widget)
+                    if span is not None:
+                        return f"@{name}[{span[0]}:{span[1]}]"
                     lnnum = vu.cpos.lnnum
                     if lnnum > 0:
                         return f"@{name}:{lnnum + 1}"
@@ -42,12 +68,26 @@ def build_reference(widget, cur_ea: int) -> str | None:
             logger.exception("pseudocode reference failed")
         return None
 
-    if cur_ea == ida_idaapi.BADADDR:
+    # disassembly / hex: prefer the name at the selection start, else address
+    sel_ea = _disasm_selection_start(widget)
+    ea = sel_ea if sel_ea != ida_idaapi.BADADDR else cur_ea
+    if ea == ida_idaapi.BADADDR:
         return None
-    name = ida_name.get_name(cur_ea)
+    name = ida_name.get_name(ea)
     if name:
         return f"@{name}"
-    return f"@0x{cur_ea:X}"
+    return f"@0x{ea:X}"
+
+
+def _disasm_selection_start(widget) -> int:
+    """Start EA of a disassembly/hex selection, or BADADDR if none."""
+    try:
+        ok, start, _end = ida_kernwin.read_range_selection(widget)
+        if ok and start != ida_idaapi.BADADDR:
+            return start
+    except Exception:
+        logger.exception("reading disasm selection failed")
+    return ida_idaapi.BADADDR
 
 
 def _copy_to_clipboard(text: str) -> bool:

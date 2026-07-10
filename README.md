@@ -79,9 +79,13 @@ reported in IDA's output window when clicked (the built-in fallback viewer
 dims them instead).
 
 Going the other way: right-click in the disassembly, pseudocode, or hex view
-and pick **Copy @reference** — the token for that spot (`@name`,
-`@name:line` in pseudocode, `@0xADDR` for unnamed bytes) lands on the
-clipboard, ready to paste into your deck.
+and pick **Copy @reference** — the token for that spot lands on the
+clipboard, ready to paste into your deck. Select several pseudocode lines
+first and it captures the range as an embed token `@name[lo:hi]`; otherwise
+it copies `@name:line` (pseudocode), `@name`, or `@0xADDR` for unnamed bytes.
+
+After a jump — clicked or auto-followed — keyboard focus returns to the deck,
+so you keep driving slides with the arrow keys without clicking back in.
 
 ## Writing decks
 

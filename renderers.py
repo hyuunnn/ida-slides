@@ -174,6 +174,14 @@ class SlideView(QWidget):
         if target is not None:
             name, line = target
             ida_links.jump_to(name, line)
+            # jumpto steals focus to the IDA view; keep arrow-key control here
+            from PySide6.QtCore import Qt as _Qt
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(
+                80,
+                lambda: self._browser.setFocus(_Qt.FocusReason.OtherFocusReason),
+            )
             return
         if url.scheme() in ("http", "https"):
             from PySide6.QtGui import QDesktopServices
@@ -250,6 +258,15 @@ class SlideView(QWidget):
             if m.group(1):
                 line = int(m.group(3)) if m.group(3) else None
                 ida_links.jump_to(m.group(2), line)
+                from PySide6.QtCore import Qt as _Qt
+                from PySide6.QtCore import QTimer
+
+                QTimer.singleShot(
+                    80,
+                    lambda: self._browser.setFocus(
+                        _Qt.FocusReason.OtherFocusReason
+                    ),
+                )
                 return
 
 

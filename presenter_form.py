@@ -159,6 +159,7 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
 
         if kind == "webkit":
             new_renderer = webkit_view.MarpWebKitView()
+            new_renderer._form_caption = _FORM_CAPTION
         elif kind == "web":
             try:
                 new_renderer = renderers.create_web_slide_view()

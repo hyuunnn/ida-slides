@@ -187,6 +187,12 @@ USER_JS = r"""
     var hoverTimer = null;
     var tip = null;
 
+    var mouseX = 0, mouseY = 0;
+    document.addEventListener('mousemove', function (ev) {
+        mouseX = ev.clientX;
+        mouseY = ev.clientY;
+    }, true);
+
     function showTip(el, text) {
         if (!tip) {
             tip = document.createElement('div');
@@ -195,11 +201,14 @@ USER_JS = r"""
         if (!tip.isConnected) document.body.appendChild(tip);
         tip.textContent = text;
         tip.style.display = 'block';
-        var r = el.getBoundingClientRect();
-        var x = Math.min(r.left, window.innerWidth - tip.offsetWidth - 12);
-        var y = r.bottom + 6;
-        if (y + tip.offsetHeight > window.innerHeight)
-            y = r.top - tip.offsetHeight - 6;
+        // anchor to the mouse cursor (falls back to the link's box if the
+        // cursor position isn't known yet), offset so it doesn't sit under
+        // the pointer
+        var w = tip.offsetWidth, h = tip.offsetHeight;
+        var x = (mouseX || el.getBoundingClientRect().left) + 14;
+        var y = (mouseY || el.getBoundingClientRect().bottom) + 16;
+        if (x + w > window.innerWidth - 6) x = window.innerWidth - w - 6;
+        if (y + h > window.innerHeight - 6) y = (mouseY || 0) - h - 12;
         tip.style.left = Math.max(4, x) + 'px';
         tip.style.top = Math.max(4, y) + 'px';
     }
@@ -376,14 +385,14 @@ def _make_objc_classes():
     # so a plugin upgrade in a running IDA still gets the new behavior.
     try:
         _classes = (
-            objc.lookUpClass("IdaSlidesMsgHandlerV4"),
-            objc.lookUpClass("IdaSlidesNavDelegateV4"),
+            objc.lookUpClass("IdaSlidesMsgHandlerV5"),
+            objc.lookUpClass("IdaSlidesNavDelegateV5"),
         )
         return _classes
     except objc.nosuchclass_error:
         pass
 
-    class IdaSlidesMsgHandlerV4(AppKit.NSObject):
+    class IdaSlidesMsgHandlerV5(AppKit.NSObject):
         """WKScriptMessageHandler — plain args, no blocks. Never raises."""
 
         def setOwner_(self, owner):
@@ -396,15 +405,16 @@ def _make_objc_classes():
                 if kind == "jump":
                     if body.get("auto") and not ida_links.follow_enabled():
                         return
+                    owner = getattr(self, "_owner", None)
                     name = str(body.get("name") or "")
                     line_v = body.get("line")
                     try:
                         line = int(str(line_v)) if line_v else None
                     except (TypeError, ValueError):
                         line = None
-                    if name:
+                    if name and owner is not None:
                         QTimer.singleShot(
-                            0, lambda n=name, l=line: _safe_jump(n, l)
+                            0, lambda o=owner, n=name, l=line: o.do_jump(n, l)
                         )
                 elif kind == "preview":
                     owner = getattr(self, "_owner", None)
@@ -429,7 +439,7 @@ def _make_objc_classes():
             except Exception:
                 logger.exception("script message handler failed")
 
-    class IdaSlidesNavDelegateV4(AppKit.NSObject):
+    class IdaSlidesNavDelegateV5(AppKit.NSObject):
         """Implements ONLY the block-free didFinish callback."""
 
         def setOwner_(self, owner):
@@ -443,7 +453,7 @@ def _make_objc_classes():
             except Exception:
                 logger.exception("didFinishNavigation handler failed")
 
-    _classes = (IdaSlidesMsgHandlerV4, IdaSlidesNavDelegateV4)
+    _classes = (IdaSlidesMsgHandlerV5, IdaSlidesNavDelegateV5)
     return _classes
 
 
@@ -467,6 +477,7 @@ class MarpWebKitView(QWidget):
         self._marp: str | None = None
         self._proc: QProcess | None = None
         self.engine_label = "Marp"
+        self._form_caption = "Marp Presenter"
 
         # slidev dev-server state
         self._slidev_proc: QProcess | None = None
@@ -883,6 +894,28 @@ class MarpWebKitView(QWidget):
                 QTimer.singleShot(0, lambda: self.load(self._path))
         except Exception:
             logger.exception("hash-capture completion failed")
+
+    def do_jump(self, name: str, line: int | None) -> None:
+        """Navigate IDA, then hand keyboard focus back to the deck so the
+        presenter can keep driving slides with the arrow keys."""
+        _safe_jump(name, line)
+        # jumpto steals focus to the IDA view; restore it after the jump
+        # settles (its own positioning is deferred, so wait past that)
+        QTimer.singleShot(80, self._restore_focus)
+
+    def _restore_focus(self) -> None:
+        import ida_kernwin
+
+        try:
+            twidget = ida_kernwin.find_widget(self._form_caption)
+            if twidget is not None:
+                ida_kernwin.activate_widget(twidget, True)
+            if self._web is not None:
+                win = self._web.window()
+                if win is not None:
+                    win.makeFirstResponder_(self._web)
+        except Exception:
+            logger.exception("focus restore failed")
 
     def deliver_preview(
         self, name: str, line: int | None, req_id: str, key: str
