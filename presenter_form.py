@@ -109,6 +109,18 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
         browser_act.triggered.connect(self._on_open_browser_clicked)
         toolbar.addAction(browser_act)
 
+        import ida_links
+
+        follow_act = QAction("Follow @!", parent)
+        follow_act.setCheckable(True)
+        follow_act.setChecked(ida_links.follow_enabled())
+        follow_act.setToolTip(
+            "Presenter follow: auto-jump IDA to @! tokens when their slide "
+            "becomes visible"
+        )
+        follow_act.toggled.connect(ida_links.set_follow_enabled)
+        toolbar.addAction(follow_act)
+
         toolbar.addSeparator()
         self._status = QLabel("", parent)
         toolbar.addWidget(self._status)

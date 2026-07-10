@@ -50,6 +50,8 @@ class SlideView(QWidget):
         self._browser.anchorClicked.connect(self._on_anchor_clicked)
         self._browser.installEventFilter(self)
 
+        self._last_auto_index: int | None = None
+
         self._prev_btn = QToolButton(self)
         self._prev_btn.setText("◀")
         self._prev_btn.setAutoRepeat(True)
@@ -209,6 +211,20 @@ class SlideView(QWidget):
         self._counter.setText(f"{self._index + 1} / {total}")
         self._prev_btn.setEnabled(self._index > 0)
         self._next_btn.setEnabled(self._index < total - 1)
+        self._fire_presenter_follow()
+
+    def _fire_presenter_follow(self) -> None:
+        """Auto-jump to the slide's first @! token when the slide changes."""
+        if self._index == self._last_auto_index:
+            return
+        self._last_auto_index = self._index
+        if not ida_links.follow_enabled():
+            return
+        for m in ida_links.TOKEN_RE.finditer(self._slides[self._index]):
+            if m.group(1):
+                line = int(m.group(3)) if m.group(3) else None
+                ida_links.jump_to(m.group(2), line)
+                return
 
 
 def create_web_slide_view(parent: QWidget | None = None) -> QWidget:

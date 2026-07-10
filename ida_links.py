@@ -18,9 +18,23 @@ logger = logging.getLogger(__name__)
 IDA_URL_SCHEME = "ida"
 
 # @sub_401000, @main, @_Z3foov, @.init_proc, @0x401000
-# an optional :N suffix targets pseudocode line N (@sub_401000:22)
+# an optional :N suffix targets pseudocode line N (@sub_401000:22);
+# a ! marker (@!sub_401000:22) additionally auto-jumps when the slide
+# containing it becomes visible ("presenter follow")
 _NAME_PATTERN = r"0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*"
-TOKEN_RE = re.compile(rf"@({_NAME_PATTERN})(?::(\d+))?")
+TOKEN_RE = re.compile(rf"@(!?)({_NAME_PATTERN})(?::(\d+))?")
+
+# presenter-follow master switch, toggled from the form's toolbar
+_follow_enabled = True
+
+
+def set_follow_enabled(value: bool) -> None:
+    global _follow_enabled
+    _follow_enabled = bool(value)
+
+
+def follow_enabled() -> bool:
+    return _follow_enabled
 
 _TAG_SPLIT_RE = re.compile(r"(<[^>]*>)")
 
@@ -142,8 +156,9 @@ def linkify_html(
     """
 
     def _sub(m: re.Match) -> str:
-        name = m.group(1)
-        line = int(m.group(2)) if m.group(2) else None
+        bang = m.group(1)
+        name = m.group(2)
+        line = int(m.group(3)) if m.group(3) else None
         # trailing dots are almost always sentence punctuation, not part of
         # the name ("... @main. Next ...")
         trail = ""
@@ -152,7 +167,7 @@ def linkify_html(
             trail += "."
         if not name:
             return m.group(0)
-        token = "@" + name + (f":{line}" if line else "")
+        token = "@" + bang + name + (f":{line}" if line else "")
         if is_resolved(name):
             return (
                 f'<a href="{make_href(name, line)}" style="'
@@ -179,7 +194,7 @@ LINKIFY_JS = r"""
     if (window.__idaPptLinkified) return;
     window.__idaPptLinkified = true;
 
-    var RE = /@(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)(?::(\d+))?/g;
+    var RE = /@(!?)(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)(?::(\d+))?/g;
 
     var style = document.createElement('style');
     style.textContent =
@@ -203,14 +218,14 @@ LINKIFY_JS = r"""
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c];
         });
         RE.lastIndex = 0;
-        span.innerHTML = escaped.replace(RE, function (m, name, line) {
+        span.innerHTML = escaped.replace(RE, function (m, bang, name, line) {
             var trail = '';
             while (name.length && name.slice(-1) === '.') {
                 name = name.slice(0, -1);
                 trail += '.';
             }
             if (!name.length) return m;
-            var label = '@' + name + (line ? ':' + line : '');
+            var label = '@' + bang + name + (line ? ':' + line : '');
             return '<a class="ida-xref" href="ida:///' +
                 encodeURIComponent(name) + (line ? ':' + line : '') +
                 '">' + label + '</a>' + trail;

@@ -61,6 +61,13 @@ can also be opened directly.
 | `@main[1:8]` | the decompiled lines 1–8, embedded as a code block |
 | `@main[7]` | just pseudocode line 7 |
 | `@main[]` | the whole decompiled function |
+| `@main[1:8@5]` | lines 1–8 with line 5 marked `►` |
+| `@!main:12` | **presenter follow**: IDA jumps there by itself the moment this slide is shown (still clickable) |
+| `@!main[1:8@5]` | embed + `►` mark + auto-jump to line 5 on slide entry |
+
+Presenter follow is per-token (`!`), so you decide exactly where the deck
+drives IDA and where it waits for a click. The **Follow @!** toolbar toggle
+turns all auto-jumps on/off — e.g. off while editing, on while presenting.
 
 Line jumps (`:N`) and embeds (`[a:b]`) both read live from the IDB, so a
 rename or re-analysis is reflected the next time you save. Unknown names are
