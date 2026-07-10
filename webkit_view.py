@@ -1,0 +1,700 @@
+"""True-Marp slide renderer for macOS: embeds a native WKWebView inside the
+IDA dock widget via PyObjC.
+
+IDA's bundled PySide6 has no QtWebEngine, so this renderer attaches a native
+WKWebView as a subview of the Qt widget's NSView (winId). Markdown decks are
+converted with the real marp CLI on every save, giving pixel-perfect Marp
+theme rendering; marp-cli HTML output can also be opened directly.
+
+CRASH SAFETY: a Python exception escaping a PyObjC delegate method becomes an
+ObjC exception that unwinds through WebKit and aborts IDA. Worse, PyObjC
+cannot call WebKit completion-handler *blocks* ("cannot call block without a
+signature"), and WebKit aborts the process if a decision handler is dropped.
+So this module never implements any delegate method that receives a block:
+
+- @name click routing uses a WKScriptMessageHandler (postMessage from a JS
+  click interceptor installed as a WKUserScript) — no blocks involved.
+- The navigation delegate implements only webView:didFinishNavigation:
+  (block-free) for slide-position restore after reloads.
+- All IDA work is deferred out of ObjC callbacks via QTimer.singleShot(0).
+"""
+
+import glob
+import json
+import logging
+import os
+import re
+import shutil
+import socket
+import sys
+
+from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+import ida_links
+
+logger = logging.getLogger(__name__)
+
+_NODE_BIN_GLOBS = [
+    os.path.expanduser("~/.nvm/versions/node/*/bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+]
+
+# front-matter keys that identify a Slidev deck (none of these are Marp's)
+_SLIDEV_FM_KEYS = {
+    "transition", "mdc", "drawings", "highlighter", "monaco", "colorSchema",
+    "routerMode", "canvasWidth", "aspectRatio", "fonts", "addons",
+    "titleTemplate", "presenter", "browserExporter", "htmlAttrs",
+    "lineNumbers", "record", "selectable", "seoMeta", "favicon", "info",
+}
+
+# Injected into every page load: linkify @tokens, intercept clicks, and relay
+# them to Python over the "ida" message channel. Marp output is a static DOM,
+# but Slidev is a Vue SPA that mounts slides dynamically, so linkification
+# re-runs through a MutationObserver (disconnected during our own rewrites to
+# avoid feedback loops).
+USER_JS = r"""
+(function () {
+    if (window.__idaPptHooked) return;
+    window.__idaPptHooked = true;
+
+    var RE = /@(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)/g;
+
+    function addStyle() {
+        if (!document.head || document.getElementById('ida-xref-style')) return;
+        var style = document.createElement('style');
+        style.id = 'ida-xref-style';
+        style.textContent =
+            'a.ida-xref{color:#4ea1ff;background:rgba(78,161,255,.15);' +
+            'border-radius:3px;padding:0 .15em;text-decoration:none;' +
+            'font-family:monospace;cursor:pointer;}' +
+            'a.ida-xref:hover{background:rgba(78,161,255,.35);}';
+        document.head.appendChild(style);
+    }
+
+    function linkify(root) {
+        if (!root) return;
+        var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        var targets = [];
+        while (walker.nextNode()) {
+            var n = walker.currentNode;
+            if (n.parentElement &&
+                n.parentElement.closest('a,script,style,textarea,[contenteditable]'))
+                continue;
+            RE.lastIndex = 0;
+            if (RE.test(n.nodeValue)) targets.push(n);
+        }
+        targets.forEach(function (n) {
+            var span = document.createElement('span');
+            var escaped = n.nodeValue.replace(/[&<>]/g, function (c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c];
+            });
+            RE.lastIndex = 0;
+            span.innerHTML = escaped.replace(RE, function (m, name) {
+                var trail = '';
+                while (name.length && name.slice(-1) === '.') {
+                    name = name.slice(0, -1);
+                    trail += '.';
+                }
+                if (!name.length) return m;
+                return '<a class="ida-xref" data-ida-name="' + name + '">@' +
+                    name + '</a>' + trail;
+            });
+            n.parentNode.replaceChild(span, n);
+        });
+        return targets.length;
+    }
+
+    var observer = null;
+    var scheduled = false;
+
+    function rescan() {
+        scheduled = false;
+        if (observer) observer.disconnect();
+        addStyle();
+        linkify(document.body);
+        if (observer && document.body)
+            observer.observe(document.body,
+                             {childList: true, subtree: true, characterData: true});
+    }
+
+    function schedule() {
+        if (scheduled) return;
+        scheduled = true;
+        setTimeout(rescan, 150);
+    }
+
+    observer = new MutationObserver(schedule);
+    rescan();
+
+    document.addEventListener('click', function (ev) {
+        var t = ev.target;
+        if (!t || !t.closest) return;
+        var xref = t.closest('a.ida-xref');
+        if (xref) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            window.webkit.messageHandlers.ida.postMessage(
+                {type: 'jump', name: xref.getAttribute('data-ida-name')});
+            return;
+        }
+        var a = t.closest('a[href]');
+        if (a && /^https?:/i.test(a.href) &&
+            new URL(a.href, location.href).origin !== location.origin) {
+            // external links open in the system browser; same-origin
+            // navigation (e.g. Slidev's SPA routing) stays in the deck
+            ev.preventDefault();
+            ev.stopPropagation();
+            window.webkit.messageHandlers.ida.postMessage(
+                {type: 'ext', url: a.href});
+        }
+    }, true);
+})();
+"""
+
+
+def _find_node_tool(name: str) -> str | None:
+    path = shutil.which(name)
+    if path:
+        return path
+    for pattern in _NODE_BIN_GLOBS:
+        hits = sorted(glob.glob(os.path.join(pattern, name)), reverse=True)
+        if hits:
+            return hits[0]
+    return None
+
+
+def find_marp() -> str | None:
+    return _find_node_tool("marp")
+
+
+def find_slidev() -> str | None:
+    return _find_node_tool("slidev")
+
+
+def _front_matter_lines(md_path: str) -> list[str]:
+    try:
+        with open(md_path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    if not lines or lines[0].strip() != "---":
+        return []
+    for i in range(1, min(len(lines), 100)):
+        if lines[i].strip() == "---":
+            return lines[1:i]
+    return []
+
+
+def detect_engine(md_path: str) -> str:
+    """Pick the presentation engine for a Markdown deck: 'marp' or 'slidev'.
+
+    Explicit `ida-slides-engine: <engine>` in the front matter wins; then
+    `marp: true` selects Marp; then any Slidev-specific front-matter key
+    selects Slidev (if its CLI is installed). Marp is the default.
+    """
+    fm = _front_matter_lines(md_path)
+    keys = {}
+    for line in fm:
+        m = re.match(r"^([A-Za-z_-]+)\s*:\s*(.*)$", line)
+        if m:
+            keys[m.group(1)] = m.group(2).strip()
+
+    override = keys.get("ida-slides-engine", "").lower()
+    if override in ("marp", "slidev"):
+        return override
+    if "marp" in keys:
+        return "marp"
+    if _SLIDEV_FM_KEYS & keys.keys() and find_slidev():
+        return "slidev"
+    return "marp"
+
+
+def webkit_available() -> bool:
+    if sys.platform != "darwin":
+        return False
+    try:
+        import objc  # noqa: F401
+        import WebKit  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _safe_jump(name: str) -> None:
+    try:
+        ida_links.jump_to(name)
+    except Exception:
+        logger.exception("jump failed for %s", name)
+
+
+def _open_external(spec: str) -> None:
+    try:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        QDesktopServices.openUrl(QUrl(spec))
+    except Exception:
+        logger.exception("failed to open external url")
+
+
+_classes = None
+
+
+def _make_objc_classes():
+    """Create the ObjC helper classes lazily and only once per process."""
+    global _classes
+    if _classes is not None:
+        return _classes
+
+    import AppKit
+    import objc
+
+    # the ObjC runtime forbids redefining a class name; after a module
+    # reload (plugin update, dev iteration) reuse the already-registered
+    # classes — their implementations are functionally identical
+    try:
+        _classes = (
+            objc.lookUpClass("IdaPptMsgHandler"),
+            objc.lookUpClass("IdaPptNavDelegate"),
+        )
+        return _classes
+    except objc.nosuchclass_error:
+        pass
+
+    class IdaPptMsgHandler(AppKit.NSObject):
+        """WKScriptMessageHandler — plain args, no blocks. Never raises."""
+
+        def userContentController_didReceiveScriptMessage_(self, ucc, message):
+            try:
+                body = message.body()
+                kind = str(body.get("type") or "")
+                if kind == "jump":
+                    name = str(body.get("name") or "")
+                    if name:
+                        QTimer.singleShot(0, lambda n=name: _safe_jump(n))
+                elif kind == "ext":
+                    url = str(body.get("url") or "")
+                    if url:
+                        QTimer.singleShot(0, lambda u=url: _open_external(u))
+            except Exception:
+                logger.exception("script message handler failed")
+
+    class IdaPptNavDelegate(AppKit.NSObject):
+        """Implements ONLY the block-free didFinish callback."""
+
+        def setOwner_(self, owner):
+            self._owner = owner
+
+        def webView_didFinishNavigation_(self, webview, nav):
+            try:
+                owner = getattr(self, "_owner", None)
+                if owner is not None:
+                    QTimer.singleShot(0, owner.on_load_finished)
+            except Exception:
+                logger.exception("didFinishNavigation handler failed")
+
+    _classes = (IdaPptMsgHandler, IdaPptNavDelegate)
+    return _classes
+
+
+class MarpWebKitView(QWidget):
+    """Renders a Marp deck with a native WKWebView.
+
+    .md files are converted via marp CLI to a hidden HTML file next to the
+    source (so relative image paths keep working); .html files load directly.
+    """
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._path: str | None = None            # file the user opened
+        self._generated: str | None = None       # html we own and clean up
+        self._pending_hash: str | None = None
+        self._web = None
+        self._delegate = None
+        self._msg_handler = None
+        self._ucc = None
+        self._marp: str | None = None
+        self._proc: QProcess | None = None
+        self.engine_label = "Marp"
+
+        # slidev dev-server state
+        self._slidev_proc: QProcess | None = None
+        self._slidev_md: str | None = None
+        self._slidev_port: int | None = None
+        self._poll_timer: QTimer | None = None
+        self._poll_tries = 0
+
+        self._status = QLabel("", self)
+        self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status.setWordWrap(True)
+        self._status.setVisible(False)
+
+        self._container = QWidget(self)
+        self._container.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._status)
+        layout.addWidget(self._container, 1)
+
+        # attach after the widget is realized inside the dock
+        QTimer.singleShot(0, self._attach_webview)
+
+    # ------------------------------------------------------------------
+    def _attach_webview(self) -> None:
+        if self._web is not None:
+            return
+        try:
+            import AppKit
+            import objc
+            import WebKit
+
+            msg_cls, nav_cls = _make_objc_classes()
+
+            conf = WebKit.WKWebViewConfiguration.alloc().init()
+            ucc = conf.userContentController()
+            self._msg_handler = msg_cls.alloc().init()
+            ucc.addScriptMessageHandler_name_(self._msg_handler, "ida")
+            script = WebKit.WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
+                USER_JS, WebKit.WKUserScriptInjectionTimeAtDocumentEnd, True
+            )
+            ucc.addUserScript_(script)
+            self._ucc = ucc
+
+            nsview = objc.objc_object(c_void_p=int(self._container.winId()))
+            web = WebKit.WKWebView.alloc().initWithFrame_configuration_(
+                nsview.bounds(), conf
+            )
+            web.setAutoresizingMask_(
+                AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable
+            )
+            self._delegate = nav_cls.alloc().init()
+            self._delegate.setOwner_(self)
+            web.setNavigationDelegate_(self._delegate)  # weak ref; we hold it
+            nsview.addSubview_(web)
+            self._web = web
+        except Exception:
+            logger.exception("failed to attach WKWebView")
+            self._show_status("WKWebView attach failed — see Output window")
+            return
+
+        if self._path:
+            pending, self._path = self._path, None
+            self.load(pending)
+
+    def _show_status(self, text: str) -> None:
+        self._status.setText(text)
+        self._status.setVisible(bool(text))
+
+    # ------------------------------------------------------------------
+    # Public surface (same as the other renderers)
+    # ------------------------------------------------------------------
+    def load(self, path: str) -> None:
+        self._path = path
+        ext = os.path.splitext(path)[1].lower()
+        is_md = ext in (".md", ".markdown")
+        engine = detect_engine(path) if is_md else "marp"
+        self.engine_label = "Slidev" if engine == "slidev" else "Marp"
+        if self._web is None:
+            return  # _attach_webview picks it up
+        if engine == "slidev":
+            self._run_slidev(path)
+        elif is_md:
+            self._stop_slidev()
+            self._run_marp(path)
+        else:
+            self._stop_slidev()
+            self._load_html(path)
+
+    def reload(self) -> None:
+        if self._path is None or self._web is None:
+            return
+        if self._slidev_proc is not None:
+            try:
+                self._web.evaluateJavaScript_completionHandler_(
+                    "window.location.reload()", None
+                )
+            except Exception:
+                logger.exception("slidev reload failed")
+            return
+        try:
+            self._web.evaluateJavaScript_completionHandler_(
+                "window.location.hash", self._on_hash_captured
+            )
+        except Exception:
+            logger.exception("hash capture failed; reloading cold")
+            self.load(self._path)
+
+    def on_source_changed(self) -> None:
+        """The source file was saved. Slidev's HMR already handled it."""
+        if self._slidev_proc is None:
+            self.reload()
+
+    def cleanup(self) -> None:
+        """Detach the native view; call before the Qt widget goes away."""
+        if self._proc is not None:
+            self._proc.kill()
+            self._proc = None
+        self._stop_slidev()
+        if self._ucc is not None:
+            try:
+                self._ucc.removeScriptMessageHandlerForName_("ida")
+            except Exception:
+                logger.exception("message handler teardown failed")
+            self._ucc = None
+        if self._web is not None:
+            try:
+                self._web.setNavigationDelegate_(None)
+                self._web.removeFromSuperview()
+            except Exception:
+                logger.exception("webview teardown failed")
+            self._web = None
+        self._delegate = None
+        self._msg_handler = None
+        self._remove_generated()
+
+    # ------------------------------------------------------------------
+    # process helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _tool_env(tool_path: str) -> QProcessEnvironment:
+        # `#!/usr/bin/env node` shebangs need node on PATH, which a
+        # Dock-launched IDA doesn't have — node sits next to the tool script
+        env = QProcessEnvironment.systemEnvironment()
+        tool_dir = os.path.dirname(tool_path)
+        path = env.value("PATH", "")
+        if tool_dir not in path.split(":"):
+            env.insert("PATH", f"{tool_dir}:{path}" if path else tool_dir)
+        return env
+
+    # ------------------------------------------------------------------
+    # slidev dev-server pipeline
+    # ------------------------------------------------------------------
+    def _run_slidev(self, md_path: str) -> None:
+        slidev = find_slidev()
+        if slidev is None:
+            self._show_status(
+                "slidev CLI not found — install with: npm i -g @slidev/cli"
+            )
+            return
+
+        if (
+            self._slidev_proc is not None
+            and self._slidev_proc.state() == QProcess.ProcessState.Running
+            and self._slidev_md == md_path
+        ):
+            self._load_url(f"http://127.0.0.1:{self._slidev_port}/")
+            return
+
+        self._stop_slidev()
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        self._show_status("slidev starting…")
+        proc = QProcess(self)
+        proc.setProgram(slidev)
+        proc.setArguments([md_path, "--port", str(port), "--force"])
+        proc.setStandardInputFile(QProcess.nullDevice())
+        proc.setWorkingDirectory(os.path.dirname(md_path))
+        proc.setProcessEnvironment(self._tool_env(slidev))
+        proc.errorOccurred.connect(
+            lambda _e: self._show_status("slidev failed to start")
+        )
+        proc.finished.connect(self._on_slidev_exit)
+        self._slidev_proc = proc
+        self._slidev_md = md_path
+        self._slidev_port = port
+        proc.start()
+
+        self._poll_tries = 0
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll_slidev_ready)
+        self._poll_timer.start(400)
+
+    def _poll_slidev_ready(self) -> None:
+        if self._slidev_proc is None or self._slidev_port is None:
+            if self._poll_timer:
+                self._poll_timer.stop()
+            return
+        self._poll_tries += 1
+        try:
+            with socket.create_connection(("127.0.0.1", self._slidev_port), 0.2):
+                pass
+        except OSError:
+            if self._poll_tries > 150:  # ~60s: give up
+                self._poll_timer.stop()
+                err = bytes(
+                    self._slidev_proc.readAllStandardError()
+                ).decode("utf-8", "replace").strip().splitlines()
+                self._show_status(
+                    "slidev did not come up"
+                    + (f": {err[-1]}" if err else "")
+                )
+            return
+        self._poll_timer.stop()
+        self._show_status("")
+        self._load_url(f"http://127.0.0.1:{self._slidev_port}/")
+
+    def _on_slidev_exit(self, exit_code: int, _status) -> None:
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
+        proc, self._slidev_proc = self._slidev_proc, None
+        if proc is not None and exit_code != 0:
+            err = bytes(proc.readAllStandardError()).decode(
+                "utf-8", "replace"
+            ).strip().splitlines()
+            out = bytes(proc.readAllStandardOutput()).decode(
+                "utf-8", "replace"
+            ).strip().splitlines()
+            detail = (err or out)
+            self._show_status(
+                f"slidev exited ({exit_code})"
+                + (f": {detail[-1]}" if detail else "")
+            )
+
+    def _stop_slidev(self) -> None:
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
+            self._poll_timer = None
+        if self._slidev_proc is not None:
+            proc, self._slidev_proc = self._slidev_proc, None
+            try:
+                proc.finished.disconnect(self._on_slidev_exit)
+            except (RuntimeError, TypeError):
+                pass
+            proc.terminate()
+            if not proc.waitForFinished(1500):
+                proc.kill()
+                proc.waitForFinished(1000)
+        self._slidev_md = None
+        self._slidev_port = None
+
+    # ------------------------------------------------------------------
+    # marp CLI pipeline
+    # ------------------------------------------------------------------
+    def _run_marp(self, md_path: str) -> None:
+        if self._marp is None:
+            self._marp = find_marp()
+        if self._marp is None:
+            self._show_status(
+                "marp CLI not found — install with: npm i -g @marp-team/marp-cli"
+            )
+            return
+
+        stem = os.path.splitext(os.path.basename(md_path))[0]
+        out = os.path.join(os.path.dirname(md_path), f".{stem}.ida-slides.html")
+
+        if self._proc is not None:
+            self._proc.kill()
+            self._proc = None
+
+        self._show_status("marp rendering…")
+        proc = QProcess(self)
+        proc.setProgram(self._marp)
+        proc.setArguments([md_path, "-o", out, "--html"])
+        # marp blocks reading stdin when it is a pipe
+        proc.setStandardInputFile(QProcess.nullDevice())
+        # marp's `#!/usr/bin/env node` shebang needs node on PATH, which a
+        # Dock-launched IDA doesn't have — node sits next to the marp script
+        env = QProcessEnvironment.systemEnvironment()
+        marp_dir = os.path.dirname(self._marp)
+        path = env.value("PATH", "")
+        if marp_dir not in path.split(":"):
+            env.insert("PATH", f"{marp_dir}:{path}" if path else marp_dir)
+        proc.setProcessEnvironment(env)
+        proc.finished.connect(
+            lambda code, _st, out=out: self._on_marp_finished(code, out)
+        )
+        proc.errorOccurred.connect(self._on_marp_error)
+        self._proc = proc
+        proc.start()
+
+    def _on_marp_error(self, _error) -> None:
+        self._proc = None
+        self._show_status("marp CLI failed to start")
+
+    def _on_marp_finished(self, exit_code: int, out: str) -> None:
+        stderr = ""
+        if self._proc is not None:
+            stderr = bytes(self._proc.readAllStandardError()).decode(
+                "utf-8", "replace"
+            )
+            self._proc = None
+        if exit_code != 0 or not os.path.isfile(out):
+            detail = stderr.strip().splitlines()
+            self._show_status(
+                f"marp failed (exit {exit_code})"
+                + (f": {detail[-1]}" if detail else "")
+            )
+            return
+        self._show_status("")
+        if self._generated and self._generated != out:
+            self._remove_generated()
+        self._generated = out
+        self._load_html(out)
+
+    def _remove_generated(self) -> None:
+        if self._generated:
+            try:
+                os.remove(self._generated)
+            except OSError:
+                pass
+            self._generated = None
+
+    # ------------------------------------------------------------------
+    # WKWebView loading
+    # ------------------------------------------------------------------
+    def _load_url(self, spec: str) -> None:
+        if self._web is None:
+            return
+        try:
+            import AppKit
+
+            url = AppKit.NSURL.URLWithString_(spec)
+            req = AppKit.NSURLRequest.requestWithURL_(url)
+            self._web.loadRequest_(req)
+        except Exception:
+            logger.exception("loadRequest failed for %s", spec)
+
+    def _load_html(self, html_path: str) -> None:
+        if self._web is None:
+            return
+        try:
+            import AppKit
+
+            url = AppKit.NSURL.fileURLWithPath_(os.path.abspath(html_path))
+            root = AppKit.NSURL.fileURLWithPath_(
+                os.path.dirname(os.path.abspath(html_path))
+            )
+            self._web.loadFileURL_allowingReadAccessToURL_(url, root)
+        except Exception:
+            logger.exception("loadFileURL failed")
+
+    def _on_hash_captured(self, result, error) -> None:
+        # PyObjC completion callback — must never raise
+        try:
+            self._pending_hash = result if isinstance(result, str) and result else None
+            if self._path:
+                QTimer.singleShot(0, lambda: self.load(self._path))
+        except Exception:
+            logger.exception("hash-capture completion failed")
+
+    def on_load_finished(self) -> None:
+        """Called (via QTimer) after didFinishNavigation."""
+        if self._web is None or not self._pending_hash:
+            return
+        try:
+            # Bespoke.js reads the hash on hashchange: flip then restore.
+            js = (
+                "window.location.hash = '#/0';"
+                f"window.location.hash = {json.dumps(self._pending_hash)};"
+            )
+            self._web.evaluateJavaScript_completionHandler_(js, None)
+            self._pending_hash = None
+        except Exception:
+            logger.exception("hash restore failed")

@@ -1,0 +1,40 @@
+{
+  "IDAMetadataDescriptorVersion": 1,
+  "plugin": {
+    "name": "ida-slides",
+    "entryPoint": "marp_presenter_entry.py",
+    "version": "0.2.0",
+    "idaVersions": ">=9.2",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64",
+      "macos-x86_64",
+      "macos-aarch64"
+    ],
+    "description": "Open Marp or Slidev slide decks inside a dockable IDA tab, with @sub_xxx tokens rendered as clickable links that jump the disassembly view. On macOS the real marp/slidev CLIs render with full theme fidelity in an embedded native WKWebView; decks live-reload on save.",
+    "pythonDependencies": [
+      "markdown>=3.5",
+      "pyobjc-framework-WebKit>=10; sys_platform == 'darwin'"
+    ],
+    "license": "MIT",
+    "categories": [
+      "ui-ux-and-visualization"
+    ],
+    "keywords": [
+      "marp",
+      "slidev",
+      "slides",
+      "presentation",
+      "markdown"
+    ],
+    "authors": [
+      {
+        "name": "Hyun Yi",
+        "email": "hyuunnnnn@gmail.com"
+      }
+    ],
+    "urls": {
+      "repository": "https://github.com/hyuunnn/ida-slides"
+    }
+  }
+}

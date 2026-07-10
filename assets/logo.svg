@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="300" viewBox="0 0 880 300" role="img" aria-label="ida-slides — Marp / Slidev decks inside IDA">
+  <defs>
+    <linearGradient id="slideg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#e8eef7"/>
+    </linearGradient>
+    <linearGradient id="accentg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4ea1ff"/>
+      <stop offset="1" stop-color="#7c6cff"/>
+    </linearGradient>
+    <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M1,1 L7,4 L1,7 Z" fill="#4ea1ff"/>
+    </marker>
+  </defs>
+
+  <!-- backdrop -->
+  <rect x="0" y="0" width="880" height="300" rx="20" fill="#141821"/>
+
+  <!-- wordmark -->
+  <text x="56" y="76" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="44" font-weight="800" fill="#f2f5fa">ida-slides</text>
+  <text x="58" y="104" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="500" fill="#8b96a8">Marp / Slidev decks docked inside IDA</text>
+
+  <!-- ===== left: disassembly pane ===== -->
+  <rect x="56" y="132" width="330" height="128" rx="10" fill="#1d232f" stroke="#2c3546" stroke-width="1.5"/>
+  <!-- pane header dots -->
+  <circle cx="74" cy="150" r="4.5" fill="#3a4558"/>
+  <circle cx="90" cy="150" r="4.5" fill="#3a4558"/>
+  <circle cx="106" cy="150" r="4.5" fill="#3a4558"/>
+  <text x="128" y="155" font-family="ui-monospace, Menlo, monospace" font-size="12" fill="#5d6b82">IDA View-A</text>
+
+  <g font-family="ui-monospace, Menlo, monospace" font-size="14">
+    <text x="76" y="184" fill="#7f8ca1">loc_43580:</text>
+    <text x="76" y="208" fill="#5d6b82">MOV&#160;&#160;&#160;X0, X19</text>
+    <!-- highlighted jump target line -->
+    <rect x="68" y="216" width="306" height="22" rx="5" fill="#24334d"/>
+    <text x="76" y="232" fill="#c9d4e4">BL&#160;&#160;&#160;&#160;<tspan fill="#4ea1ff" font-weight="700">sub_436CC</tspan></text>
+  </g>
+
+  <!-- ===== right: slide pane ===== -->
+  <g transform="rotate(1.5 640 190)">
+    <rect x="474" y="122" width="330" height="144" rx="12" fill="url(#slideg)"/>
+    <rect x="474" y="122" width="330" height="10" rx="5" fill="url(#accentg)"/>
+    <text x="498" y="166" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="19" font-weight="750" fill="#1e293b">Init flow</text>
+    <rect x="498" y="182" width="188" height="9" rx="4.5" fill="#c3cedd"/>
+    <rect x="498" y="200" width="144" height="9" rx="4.5" fill="#d4dce8"/>
+    <!-- clickable token chip -->
+    <rect x="498" y="220" width="140" height="28" rx="7" fill="#dbe9ff"/>
+    <text x="510" y="240" font-family="ui-monospace, Menlo, monospace" font-size="15" font-weight="700" fill="#1a63c9">@sub_436CC</text>
+    <!-- cursor -->
+    <path d="M640 246 l0 16 4.5 -4.5 3 7 3.5 -1.6 -3 -6.9 6.5 -0.5 Z" fill="#1e293b" stroke="#ffffff" stroke-width="1.2"/>
+  </g>
+
+  <!-- jump arrow: slide chip -> code line -->
+  <path d="M500 236 C 444 242, 432 232, 386 228" fill="none" stroke="#4ea1ff" stroke-width="2.5" stroke-dasharray="1 6" stroke-linecap="round" marker-end="url(#arrowhead)"/>
+</svg>

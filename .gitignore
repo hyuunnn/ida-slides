@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ida-slides
+.DS_Store
+examples/*.html
+.*.ida-slides.html

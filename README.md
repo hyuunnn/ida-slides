@@ -1,1 +1,91 @@
+<p align="center">
+  <img src="assets/logo.png" alt="ida-slides — Marp / Slidev decks docked inside IDA" width="760">
+</p>
+
+English | [한국어](README_ko.md)
+
 # ida-slides
+
+Real **Marp** or **Slidev** slide decks inside a dockable IDA Pro tab — with
+`@name` tokens rendered as clickable links that jump the disassembly view.
+
+Present your analysis with the slides docked on the right and the code on the
+left. Write `@sub_401000`, `@main`, or `@0x401000` anywhere in the deck and it
+becomes a highlighted link; clicking it navigates IDA to that function or
+address.
+
+## Usage
+
+1. `Ctrl+Shift+M` (or View → Open subviews → Marp Presenter: Open Slides…)
+2. Pick your Markdown deck (`.md`)
+
+On macOS the deck renders in a native WKWebView embedded in the IDA tab — no
+QtWebEngine required. The engine is picked per deck:
+
+- **Marp** (default): the `marp` CLI converts to HTML on every save and the
+  view reloads in place, keeping the current slide. Full Marp themes,
+  backgrounds, pagination.
+- **Slidev**: chosen when the front matter has Slidev-specific keys
+  (`transition:`, `mdc:`, `drawings:` …). ida-slides starts a local `slidev`
+  dev server and shows it in the tab; Vite HMR applies saves instantly.
+
+Force an engine by putting `ida-slides-engine: marp` or `ida-slides-engine: slidev`
+in the front matter. Navigate with each tool's usual keys (←/→, `f`
+fullscreen, Slidev's `o` overview, …).
+
+Requirements:
+
+- Marp: `npm i -g @marp-team/marp-cli`
+- Slidev: `npm i -g @slidev/cli` (+ the theme your deck uses, e.g.
+  `@slidev/theme-default`)
+- pyobjc-framework-WebKit (installed automatically by the Plugin Manager;
+  manual: `pip install --user pyobjc-framework-WebKit`)
+
+CLIs are found via PATH, nvm, or Homebrew. `.html` files exported by marp-cli
+can also be opened directly.
+
+### Fallbacks on other platforms
+
+- QtWebEngine (`pip install PySide6-Addons`), when importable, renders
+  marp-cli HTML decks the same way.
+- Without either, `.md` decks render in a built-in QTextBrowser slide viewer
+  (Marp syntax conventions, basic styling only). Needs the `markdown`
+  package.
+
+## Writing decks
+
+Each engine's standard conventions apply (front matter, `---` separators,
+themes, layouts). `@name` linkification runs on the rendered DOM — a
+MutationObserver keeps Slidev's dynamically mounted slides covered — so it
+works in body text and inline code alike; unknown names are reported in
+IDA's output window when clicked (the built-in fallback viewer dims them
+instead). See `examples/sample-marp.md` and `examples/sample-slidev.md`.
+
+While rendering with Marp, a hidden `.<name>.ida-slides.html` file is written
+next to your `.md` (so relative image paths keep working); it is removed when
+the deck is closed. The Slidev dev server is stopped when the deck is closed
+or swapped.
+
+## Install
+
+Symlink or copy this directory into your IDA plugins folder, e.g.:
+
+```sh
+ln -s "$(pwd)" ~/.idapro/plugins/ida-slides
+```
+
+Requires IDA 9.2+ (GUI).
+
+## Implementation notes (IDA 9.3)
+
+- `PluginForm.FormToPySideWidget` requires `QtGui` in `__main__` and fails
+  with a *silently swallowed* AttributeError otherwise; this plugin uses
+  `FormToPyQtWidget` (shiboken `wrapInstance`) which works in any context.
+- WebKit completion-handler blocks are not callable from PyObjC delegate
+  methods here ("cannot call block without a signature"), and WebKit aborts
+  the host process when a decision handler is dropped — so click routing uses
+  a `WKScriptMessageHandler` + `WKUserScript` click interceptor instead of
+  `decidePolicyForNavigationAction`. No delegate method that receives a block
+  is implemented.
+- All IDA API work triggered from ObjC callbacks is deferred via
+  `QTimer.singleShot(0, …)`.
