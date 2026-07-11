@@ -96,6 +96,9 @@ _P_HR_PTR_PTOKEN = ctypes.WINFUNCTYPE(
     HRESULT, ctypes.c_void_p, ctypes.c_void_p,
     ctypes.POINTER(EventRegistrationToken),
 )
+_P_HR_PBOOL = ctypes.WINFUNCTYPE(
+    HRESULT, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)
+)
 
 # --- COM callback objects implemented in Python ------------------------------
 _QI_PROTO = ctypes.WINFUNCTYPE(
@@ -150,14 +153,20 @@ class ComCallback:
         self.ptr = ctypes.addressof(self._obj)
         _LIVE[self.ptr] = self
 
-    # NOTE: the initial refcount of 1 is the reference we hand to the API
-    # call taking this handler; WebView2 releases it when done, which is
-    # what finally drops the object from _LIVE.
+    # REFCOUNT MODEL: the construction refcount of 1 is OUR reference, per
+    # standard COM in-param rules — the callee AddRefs anything it stores
+    # and Releases it when done, netting back to our 1, never to 0. So the
+    # caller must dispose() its construction reference right after the API
+    # call returns (success or failure); the runtime's own ref then keeps
+    # the object alive until Invoke / event removal / controller Close,
+    # whose final Release drops it from _LIVE. (Verified empirically:
+    # without the post-call dispose, every handler stuck at refcount 1 and
+    # _LIVE grew monotonically.)
 
     def dispose(self) -> None:
-        """Drop the construction reference when the API call that was meant
-        to take it failed synchronously — otherwise the object leaks in
-        _LIVE (the runtime never saw it, so it will never Release it)."""
+        """Drop the construction reference. Call exactly once, right after
+        the API call this handler was created for returns — on failure the
+        runtime never saw the object, on success it holds its own ref."""
         self._release(None)
 
     def _query_interface(self, this, riid, out):
@@ -178,15 +187,23 @@ class ComCallback:
             return E_NOINTERFACE
 
     def _add_ref(self, _this):
-        self._ref += 1
-        return self._ref
+        try:
+            self._ref += 1
+            return self._ref
+        except Exception:
+            logger.exception("AddRef failed")
+            return 1
 
     def _release(self, _this):
-        self._ref -= 1
-        if self._ref <= 0:
-            _LIVE.pop(self.ptr, None)
-            return 0
-        return self._ref
+        try:
+            self._ref -= 1
+            if self._ref <= 0:
+                _LIVE.pop(self.ptr, None)
+                return 0
+            return self._ref
+        except Exception:
+            logger.exception("Release failed")
+            return 1
 
     def _invoke(self, _this, a, b):
         try:
@@ -248,8 +265,8 @@ class WebView2Environment(_Unknown):
         hr = _com_method(self.ptr, self._CREATE_CONTROLLER, _P_HR_HWND_PTR)(
             self.ptr, hwnd, handler.ptr
         )
+        handler.dispose()  # the runtime holds its own ref on success
         if hr != S_OK:
-            handler.dispose()
             callback(None, hr)
 
 
@@ -325,8 +342,8 @@ class WebView2(_Unknown):
         hr = _com_method(self.ptr, self._ADD_SCRIPT_ON_CREATED, _P_HR_WSTR_PTR)(
             self.ptr, js, handler.ptr
         )
+        handler.dispose()  # the runtime holds its own ref on success
         if hr != S_OK:
-            handler.dispose()
             logger.error(
                 "AddScriptToExecuteOnDocumentCreated call failed: 0x%08x",
                 hr & 0xFFFFFFFF,
@@ -335,19 +352,27 @@ class WebView2(_Unknown):
     def execute_script(self, js: str, callback=None) -> None:
         """callback(result_json | None): the result is JSON-encoded by the
         runtime ('"abc"' for a string, 'null' for undefined)."""
+        if callback is None:
+            # fire-and-forget: ExecuteScript accepts a null completion
+            # handler (verified against the live runtime), so skip building
+            # a throwaway COM object per hover-preview/fixup eval
+            hr = _com_method(self.ptr, self._EXECUTE_SCRIPT, _P_HR_WSTR_PTR)(
+                self.ptr, js, None
+            )
+            if hr != S_OK:
+                logger.error("ExecuteScript failed: 0x%08x", hr & 0xFFFFFFFF)
+            return
 
         def _done(hr, result_json):
-            if callback is not None:
-                callback(result_json if hr == S_OK else None)
+            callback(result_json if hr == S_OK else None)
 
         handler = ComCallback(IID_ExecuteScriptCompletedHandler, INVOKE_HR_WSTR, _done)
         hr = _com_method(self.ptr, self._EXECUTE_SCRIPT, _P_HR_WSTR_PTR)(
             self.ptr, js, handler.ptr
         )
+        handler.dispose()  # the runtime holds its own ref on success
         if hr != S_OK:
-            handler.dispose()
-            if callback is not None:
-                callback(None)
+            callback(None)
 
     def _add_event(self, slot: int, iid: str, fn) -> int:
         handler = ComCallback(iid, INVOKE_PTR_PTR, fn)
@@ -355,8 +380,9 @@ class WebView2(_Unknown):
         hr = _com_method(self.ptr, slot, _P_HR_PTR_PTOKEN)(
             self.ptr, handler.ptr, ctypes.byref(token)
         )
+        # on success the webview holds its own ref until remove_/Close
+        handler.dispose()
         if hr != S_OK:
-            handler.dispose()
             logger.error("add_ event (slot %d) failed: 0x%08x", slot, hr & 0xFFFFFFFF)
         return token.value
 
@@ -379,10 +405,20 @@ class WebView2(_Unknown):
         )
 
     def add_navigation_completed(self, fn) -> int:
-        """fn() — called after every top-level navigation finishes."""
+        """fn(is_success: bool) — after every top-level navigation attempt.
 
-        def _event(_sender, _args):
-            fn()
+        WebView2 fires NavigationCompleted for aborted/failed navigations
+        too (IsSuccess=false, e.g. CONNECTION_ABORTED when a newer navigate
+        supersedes one in flight), unlike WKWebView's didFinishNavigation;
+        the flag is surfaced so callers can keep success-only semantics.
+        """
+
+        def _event(_sender, args):
+            ok = ctypes.c_int(0)
+            # ICoreWebView2NavigationCompletedEventArgs::get_IsSuccess
+            # (slot 3: IUnknown 0..2)
+            hr = _com_method(args, 3, _P_HR_PBOOL)(args, ctypes.byref(ok))
+            fn(bool(ok.value) if hr == S_OK else True)
 
         return self._add_event(
             self._ADD_NAVIGATION_COMPLETED, IID_NavigationCompletedEventHandler,
@@ -390,8 +426,9 @@ class WebView2(_Unknown):
         )
 
     def add_new_window_requested(self, fn) -> int:
-        """fn(uri) — popup/new-window requests; always marked Handled so no
-        stray top-level browser window ever opens out of the dock."""
+        """fn(uri, suppressed: bool) — popup/new-window requests; always
+        marked Handled so no stray top-level browser window ever opens out
+        of the dock. `suppressed` reports whether put_Handled succeeded."""
 
         def _event(_sender, args):
             out = ctypes.c_void_p()
@@ -400,9 +437,11 @@ class WebView2(_Unknown):
             uri = None
             if _com_method(args, 3, _P_HR_PPV)(args, ctypes.byref(out)) == S_OK:
                 uri = _read_cotaskmem_wstr(out.value)
-            _com_method(args, 6, _P_HR_INT)(args, 1)
+            hr = _com_method(args, 6, _P_HR_INT)(args, 1)
+            if hr != S_OK:
+                logger.error("put_Handled failed: 0x%08x", hr & 0xFFFFFFFF)
             if uri:
-                fn(uri)
+                fn(uri, hr == S_OK)
 
         return self._add_event(
             self._ADD_NEW_WINDOW_REQUESTED, IID_NewWindowRequestedEventHandler,
@@ -463,6 +502,6 @@ def create_environment(loader_path: str, user_data_dir: str, callback) -> None:
     hr = dll.CreateCoreWebView2EnvironmentWithOptions(
         None, user_data_dir, None, handler.ptr
     )
+    handler.dispose()  # the runtime holds its own ref on success
     if hr != S_OK:
-        handler.dispose()
         callback(None, hr)

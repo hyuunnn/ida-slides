@@ -16,7 +16,9 @@ round-trip → new-window suppression → teardown.
 Part 2 — renderer E2E (needs PySide6 + the marp CLI; skipped otherwise):
 QApplication + DeckWebView2View + the real marp -w pipeline: tool
 discovery, render-complete detection, navigation, USER_JS linkification of
-@tokens in the DOM, and reload() with hash capture.
+@tokens in the DOM, and the save cycle (on_source_changed → reload with
+hash capture → re-render), proven by a content MARKER that must change —
+a silently no-op reload cannot pass.
 
 Exit code 0 = all executed checks passed (skips are fine), 1 = failure.
 """
@@ -110,10 +112,14 @@ def com_smoke() -> None:
         web.add_script_to_execute_on_document_created("window.__injected = 42;")
         web.add_web_message_received(lambda j: state["msgs"].append(j))
         web.add_navigation_completed(on_nav)
-        web.add_new_window_requested(lambda u: state["newwin"].append(u))
+        web.add_new_window_requested(
+            lambda u, suppressed: state["newwin"].append((u, suppressed))
+        )
         web.navigate("file:///" + test_html.replace("\\", "/"))
 
-    def on_nav():
+    def on_nav(ok):
+        if not ok:
+            return
         state["navs"] += 1
         if state["navs"] == 1:
             state["web"].execute_script(
@@ -141,9 +147,11 @@ def com_smoke() -> None:
         str(state["msgs"][:3]),
     )
     check("execute_script", state["exec"] == ["3"], str(state["exec"]))
+    # `suppressed` carries put_Handled's HRESULT — the event firing alone
+    # would not prove the popup was actually blocked
     check(
         "new_window_suppressed",
-        any("example.com" in u for u in state["newwin"]),
+        any("example.com" in u and ok for u, ok in state["newwin"]),
         str(state["newwin"]),
     )
 
@@ -155,6 +163,17 @@ def com_smoke() -> None:
         state["web"].release()
     if state["env"]:
         state["env"].release()
+    # regression check for the ComCallback refcount model: after Close has
+    # released the event handlers and the completions have run, no Python
+    # COM object may remain referenced — a growing _LIVE is the leak that
+    # once pinned every closed view for the life of the IDA session
+    drain_deadline = time.monotonic() + 3
+    while time.monotonic() < drain_deadline and wv2._LIVE:
+        while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        time.sleep(0.01)
+    check("com_handlers_drained", not wv2._LIVE, f"live={len(wv2._LIVE)}")
     user32.DestroyWindow(hwnd)
     shutil.rmtree(tmp, ignore_errors=True)
     # the browser may still hold cache files for a moment — best effort
@@ -186,11 +205,19 @@ def qt_e2e() -> str | None:
 
     tmp = tempfile.mkdtemp(prefix="ida-slides-e2e-")
     deck = os.path.join(tmp, "talk.md")
-    with open(deck, "w", encoding="utf-8") as f:
-        f.write(
-            "---\nmarp: true\n---\n\n# Analysis of @main\n\n"
-            "see @sub_401000 and @main:12\n\n---\n\n# Slide 2\n"
-        )
+
+    # a content MARKER distinguishes DOM generations: the save phase must
+    # observe the NEW marker, so a reload that silently does nothing (e.g.
+    # a dropped hash-capture completion) fails instead of re-matching the
+    # untouched pre-reload DOM
+    def write_deck(marker: str) -> None:
+        with open(deck, "w", encoding="utf-8") as f:
+            f.write(
+                f"---\nmarp: true\n---\n\n# Analysis of @main {marker}\n\n"
+                "see @sub_401000 and @main:12\n\n---\n\n# Slide 2\n"
+            )
+
+    write_deck("MARKER_V0")
 
     app = QApplication.instance() or QApplication(sys.argv)
     win = QMainWindow()
@@ -201,53 +228,76 @@ def qt_e2e() -> str | None:
 
     state = {"phase": "load", "err": None}
     deadline = time.monotonic() + 90
-    # 3 @tokens in the deck; at least one bespoke svg/section per slide
+    # marker + 3 @tokens + at least one bespoke svg/section per slide
     probe = (
+        "((document.body.textContent.match(/MARKER_V\\d+/)||[''])[0]) + '|' + "
         "document.querySelectorAll('a.ida-xref').length + '|' + "
         "document.querySelectorAll('svg,section').length"
     )
 
     check("load_returned_true", view.load(deck))
 
+    def got(result):
+        # runs on ExecuteScript completion; everything guarded so a bad
+        # probe result can never kill the poll loop (the repeating timer
+        # keeps ticking regardless)
+        try:
+            if not result or result.count("|") != 2:
+                return
+            marker, xrefs_s, sections_s = result.split("|")
+            xrefs, sections = int(xrefs_s), int(sections_s)
+            if xrefs < 3 or sections < 1:
+                return
+            if state["phase"] == "load" and marker == "MARKER_V0":
+                check("initial_render_xrefs", True, f"xrefs={xrefs}")
+                check("engine_label", view.engine_label == "Marp",
+                      view.engine_label)
+                state["phase"] = "save"
+                # the save cycle: rewrite the deck, then take the watcher
+                # path a real editor save takes (reload → hash capture →
+                # re-render); MARKER_V1 in the DOM proves the new render
+                write_deck("MARKER_V1")
+                view.on_source_changed()
+            elif state["phase"] == "save" and marker == "MARKER_V1":
+                check("save_rerendered", True, f"xrefs={xrefs}")
+                state["phase"] = "done"
+                app.exit(0)
+        except Exception as exc:
+            print("  probe parse error:", exc)
+
     def poll():
+        # driven by a repeating timer: a wedged webview whose ExecuteScript
+        # completion never arrives still hits the deadline and FAILS,
+        # instead of hanging app.exec() forever
         if time.monotonic() > deadline:
-            state["err"] = f"timeout (status: {view._status.text()!r})"
+            state["err"] = (
+                f"timeout in phase {state['phase']!r} "
+                f"(status: {view._status.text()!r})"
+            )
             app.exit(1)
             return
         if view._web is None:
-            QTimer.singleShot(500, poll)
+            if getattr(view, "attach_failed", False):
+                state["err"] = "attach failed"
+                app.exit(1)
             return
-
-        def got(result):
-            if result and "|" in result:
-                xrefs, sections = (int(x) for x in result.split("|"))
-                if xrefs >= 3 and sections >= 1:
-                    if state["phase"] == "load":
-                        check("initial_render_xrefs", True, f"xrefs={xrefs}")
-                        check("engine_label", view.engine_label == "Marp",
-                              view.engine_label)
-                        state["phase"] = "reload"
-                        view.reload()  # exercises hash capture + re-render
-                        QTimer.singleShot(1500, poll)
-                        return
-                    check("after_reload_xrefs", True, f"xrefs={xrefs}")
-                    app.exit(0)
-                    return
-            QTimer.singleShot(500, poll)
-
         try:
             view._native_eval_js_result(probe, got)
-        except Exception as exc:  # keep polling; the deadline reports
+        except Exception as exc:
             print("  probe error:", exc)
-            QTimer.singleShot(500, poll)
 
-    QTimer.singleShot(500, poll)
+    ticker = QTimer()
+    ticker.timeout.connect(poll)
+    ticker.start(600)
     app.exec()
+    ticker.stop()
 
     if state["err"]:
         check("e2e", False, state["err"])
     elif state["phase"] == "load":
         check("initial_render_xrefs", False, "never reached")
+    elif state["phase"] == "save":
+        check("save_rerendered", False, "never reached")
 
     view.cleanup()
     check("marp_watcher_stopped", view._proc is None)

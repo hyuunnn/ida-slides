@@ -85,14 +85,26 @@ _SLIDEV_FM_KEYS = {
 # at document-end, so startup is gated on DOM readiness.
 USER_JS = r"""
 (function () {
+    // main frame only: WKUserScript enforces this natively
+    // (forMainFrameOnly), but AddScriptToExecuteOnDocumentCreated runs in
+    // child iframes too, where postMessage lands on the frame-level bridge
+    // nobody subscribes — tokens there would become dead-looking links
+    if (window.self !== window.top) return;
     if (window.__idaPptHooked) return;
     window.__idaPptHooked = true;
 
     var RE = __IDA_TOKEN_RE__;
 
+    // capture the WebView2 bridge object once: on Windows this script runs
+    // at document-created, BEFORE any page script, so a deck/theme script
+    // that later clobbers window.chrome (Chrome-detection shims) cannot
+    // kill the bridge (verified live: the captured reference keeps
+    // delivering after `delete window.chrome.webview`)
+    var bridge = (window.chrome && window.chrome.webview) || null;
+
     function post(msg) {
-        if (window.chrome && window.chrome.webview)
-            window.chrome.webview.postMessage(msg);
+        if (bridge)
+            bridge.postMessage(msg);
         else
             window.webkit.messageHandlers.ida.postMessage(msg);
     }
@@ -916,10 +928,17 @@ class DeckViewBase(QWidget):
                 proc.errorOccurred.disconnect()
             except (RuntimeError, TypeError):
                 pass
-            proc.terminate()
-            if not proc.waitForFinished(1500):
+            if _IS_WIN:
+                # terminate() posts WM_CLOSE, which a windowless console
+                # node ignores — the graceful phase would just freeze the
+                # UI thread for the full 1500ms (measured) before kill()
                 proc.kill()
                 proc.waitForFinished(1000)
+            else:
+                proc.terminate()  # SIGTERM: slidev exits promptly
+                if not proc.waitForFinished(1500):
+                    proc.kill()
+                    proc.waitForFinished(1000)
         self._slidev_md = None
         self._slidev_port = None
 

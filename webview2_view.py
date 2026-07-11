@@ -177,12 +177,23 @@ class DeckWebView2View(deck_view.DeckViewBase):
 
     def _retry_or_fail(self, udf: str, retries_left: int) -> None:
         global _shared_env
+        if _shared_env is not None:
+            # the stalled/failed env must not be reused — and our reference
+            # must be RELEASED, or its browser-process tree outlives us and
+            # keeps the user-data folder locked (a late controller callback
+            # on it is handled by the gen-mismatch drop, so this is safe)
+            _shared_env.release()
+            _shared_env = None
         if retries_left > 0 and not self._closing:
-            _shared_env = None  # the stalled/failed env must not be reused
             private = f"{_user_data_dir()}-{os.getpid()}"
             logger.warning("retrying WebView2 with private folder %s", private)
             self._attempt_attach(private, retries_left - 1)
         else:
+            # invalidate the generation: a stalled final attempt completing
+            # AFTER this failure verdict must be dropped by the gen guards,
+            # not attach into a view whose attach_failed flag is latched
+            # (and the leftover watchdog for it must not re-run this path)
+            self._attach_gen += 1
             self._attach_failed(self._ATTACH_FAIL_MSG)
 
     def _env_ready(
@@ -229,13 +240,17 @@ class DeckWebView2View(deck_view.DeckViewBase):
         self._webview = web
         web.add_script_to_execute_on_document_created(deck_view.USER_JS)
         web.add_web_message_received(self._on_web_message)
+        # success-only, matching WKWebView's didFinishNavigation: an aborted
+        # navigation (superseded by a newer save's navigate) also fires
+        # NavigationCompleted, and letting it through would consume
+        # _pending_hash — snapping the deck off the current slide
         web.add_navigation_completed(
-            lambda: QTimer.singleShot(0, self.on_load_finished)
+            lambda ok: ok and QTimer.singleShot(0, self.on_load_finished)
         )
         # suppress popups; USER_JS already routes external links, this only
         # catches window.open / middle-click paths it can't intercept
         web.add_new_window_requested(
-            lambda uri: QTimer.singleShot(
+            lambda uri, _suppressed: QTimer.singleShot(
                 0, lambda u=uri: deck_view._open_external(u)
             )
         )
