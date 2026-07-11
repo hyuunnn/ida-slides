@@ -443,8 +443,10 @@ class MarpWebKitView(QWidget):
         self._marp: str | None = None
         self._proc: QProcess | None = None       # long-lived `marp -w` watcher
         self._watch_key: tuple[str, str] | None = None
-        self._html_poll: QTimer | None = None
         self._prepared_changed = False
+        self._pending_out: str | None = None      # html we're waiting on
+        self._render_timeout: QTimer | None = None
+        self._last_marp_err: str | None = None    # last error line from marp
         self.engine_label = "Marp"
         self._form_caption = "ida-slides"
 
@@ -773,10 +775,14 @@ class MarpWebKitView(QWidget):
 
         stem = os.path.splitext(os.path.basename(md_path))[0]
         out = os.path.join(os.path.dirname(md_path), f".{stem}.ida-slides.html")
-        baseline = self._html_mtime(out)  # before the input is rewritten
         prepared = self._prepare_md(md_path)
 
-        if self._proc is None or self._watch_key != (prepared, out):
+        # start (or reuse) the watcher; `marp -w` logs "=> <out>" to stderr
+        # each time it finishes a render, which is our completion signal —
+        # mtime can't tell "this save's render" from an earlier one, and can
+        # be seen mid-write
+        fresh = self._proc is None or self._watch_key != (prepared, out)
+        if fresh:
             self._stop_marp()
             proc = QProcess(self)
             proc.setProgram(self._marp)
@@ -791,12 +797,52 @@ class MarpWebKitView(QWidget):
             self._watch_key = (prepared, out)
             proc.start()
 
-        self._await_html(out, baseline)
+        # await the next "=> out" render-complete line before loading. A
+        # reused watcher whose input didn't change never re-renders, so it
+        # would never log again — load what's already there directly.
+        if not fresh and not self._prepared_changed and os.path.isfile(out):
+            self._finish_render(out)
+        else:
+            self._pending_out = out
+            self._arm_render_timeout()
+
+    def _arm_render_timeout(self) -> None:
+        if self._render_timeout is not None:
+            self._render_timeout.stop()
+            self._render_timeout.deleteLater()
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._on_render_timeout)
+        self._render_timeout = timer
+        timer.start(15000)  # marp died mid-render, or the deck is enormous
+
+    def _on_render_timeout(self) -> None:
+        self._render_timeout = None
+        if self._pending_out is None:
+            return
+        self._pending_out = None
+        detail = f": {self._last_marp_err}" if self._last_marp_err else ""
+        self._show_status(f"marp render failed{detail}")
+
+    def _finish_render(self, out: str) -> None:
+        """A render for `out` completed — swap it into the view."""
+        if self._render_timeout is not None:
+            self._render_timeout.stop()
+            self._render_timeout.deleteLater()
+            self._render_timeout = None
+        self._pending_out = None
+        self._show_status("")
+        if self._generated and self._generated != out:
+            self._remove_generated()
+        self._generated = out
+        self._load_html(out)
 
     def _stop_marp(self) -> None:
-        if self._html_poll is not None:
-            self._html_poll.stop()
-            self._html_poll = None
+        if self._render_timeout is not None:
+            self._render_timeout.stop()
+            self._render_timeout.deleteLater()
+            self._render_timeout = None
+        self._pending_out = None
         self._watch_key = None
         if self._proc is not None:
             # disconnect before killing: the dead watcher's queued signals
@@ -812,48 +858,6 @@ class MarpWebKitView(QWidget):
             proc.kill()
             proc.waitForFinished(1000)
 
-    @staticmethod
-    def _html_mtime(path: str) -> int | None:
-        try:
-            return os.stat(path).st_mtime_ns
-        except OSError:
-            return None
-
-    def _await_html(self, out: str, baseline: int | None) -> None:
-        """(Re)load `out` once the marp watcher has rewritten it."""
-        if self._html_poll is not None:
-            self._html_poll.stop()
-            self._html_poll = None
-        # no "rendering…" status here: the label popping in and out
-        # reflows the pane on every save, and the refresh is visible anyway
-
-        state = {"ticks": 0}
-        timer = QTimer(self)
-
-        def _tick() -> None:
-            state["ticks"] += 1
-            mtime = self._html_mtime(out)
-            rendered = mtime is not None and mtime != baseline
-            # an unchanged prepared md never re-renders — reload as-is
-            unchanged = mtime is not None and not self._prepared_changed
-            if rendered or unchanged:
-                timer.stop()
-                self._html_poll = None
-                self._show_status("")
-                if self._generated and self._generated != out:
-                    self._remove_generated()
-                self._generated = out
-                self._load_html(out)
-                return
-            if state["ticks"] >= 150:  # ~15s: marp died or deck is huge
-                timer.stop()
-                self._html_poll = None
-                self._show_status("marp render timed out — see Output window")
-
-        timer.timeout.connect(_tick)
-        self._html_poll = timer
-        timer.start(100)
-
     def _on_marp_error(self, _error) -> None:
         self._proc = None
         self._watch_key = None
@@ -865,16 +869,28 @@ class MarpWebKitView(QWidget):
         self._drain_marp_stderr()
         self._proc = None
         self._watch_key = None
-        self._show_status(f"marp watcher exited (code {code}) — reload to restart")
+        detail = f": {self._last_marp_err}" if self._last_marp_err else ""
+        self._show_status(f"marp watcher exited (code {code}){detail}")
 
     def _drain_marp_stderr(self) -> None:
         if self._proc is None:
             return
         data = bytes(self._proc.readAllStandardError()).decode(
             "utf-8", "replace"
-        ).strip()
-        if data:
-            logger.debug("marp: %s", data)
+        )
+        for line in data.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            logger.debug("marp: %s", line)
+            # marp logs "[  INFO ] <in> => <out>" after each render; the
+            # arrow line is our render-complete signal. _finish_render
+            # clears _pending_out, so a second arrow line in the same
+            # buffer won't re-trigger.
+            if "=>" in line and self._pending_out is not None:
+                self._finish_render(self._pending_out)
+            elif "[ ERROR ]" in line or "error" in line.lower():
+                self._last_marp_err = line
 
     def _remove_generated(self) -> None:
         for attr in ("_generated", "_generated_md"):
