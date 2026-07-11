@@ -239,10 +239,9 @@ chrome.webview.postMessage → WebMessageReceived); both bridges land in
 - The Windows stack was statically audited from the mac side and
   reconciled against the Windows-side review the same day — see the
   status header of `win/VERIFICATION-NOTES.md` for what is FIXED /
-  REFUTED / still open (as of 2026-07-12: open items are the pnpm/yarn
-  shim-fallback orphan risk, node-missing diagnosability, and the
-  loader-DLL availability misdiagnosis). Do not re-fix items the notes
-  mark resolved.
+  REFUTED / still open (as of 2026-07-12: open items are the loader-DLL
+  availability misdiagnosis and two minor nits — scoop glob path,
+  license-file provenance). Do not re-fix items the notes mark resolved.
 - High-DPI on Windows is unverified: every WebView2 check so far ran on a
   100%-scale display (2026-07). On a 125%/150% monitor confirm the deck
   is crisp and fills the pane; if not, the fix is RasterizationScale /

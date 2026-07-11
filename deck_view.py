@@ -354,6 +354,24 @@ _NODE_CLI_ENTRIES = {
 }
 
 
+def _find_node() -> str | None:
+    """node.exe, looking past PATH: a Start-Menu-launched IDA can miss the
+    nodejs PATH entry even though node is installed in the standard spot —
+    without this, both spawn strategies die as a bare 'CLI failed to
+    start' with no hint that node itself is the missing piece."""
+    node = shutil.which("node")
+    if node:
+        return node
+    for probe in (
+        os.path.expandvars(r"%ProgramFiles%\nodejs\node.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\nodejs\node.exe"),
+        os.path.expandvars(r"%NVM_SYMLINK%\node.exe"),  # nvm-windows
+    ):
+        if os.path.isfile(probe):
+            return probe
+    return None
+
+
 def _spawn_spec(tool_path: str) -> tuple[str, list[str]]:
     """(program, prefix_args) actually handed to QProcess.
 
@@ -361,25 +379,68 @@ def _spawn_spec(tool_path: str) -> tuple[str, list[str]]:
     shims (`marp.cmd`): killing a cmd.exe wrapper orphans its node child —
     a leaked `marp -w` keeps rewriting the output forever — so prefer
     `node <real entry>.js`, which QProcess can kill cleanly. The shim is
-    the fallback (Qt 6 runs .cmd/.bat via cmd /c itself).
+    the fallback (Qt 6 runs .cmd/.bat via cmd /c itself); pnpm/yarn
+    installs always take it (their packages don't live next to the shim),
+    which is why _kill_tool_proc kills the process TREE on Windows.
     """
     root, ext = os.path.splitext(tool_path)
     if not _IS_WIN or ext.lower() not in (".cmd", ".bat", ".ps1", ""):
         return tool_path, []
     name = os.path.basename(root).lower()
     entry = _NODE_CLI_ENTRIES.get(name)
+    node = _find_node()
     if entry:
         script = os.path.join(os.path.dirname(tool_path), entry)
-        node = shutil.which("node")
         if node and os.path.isfile(script):
             return node, [script]
-    if ext.lower() == ".ps1":
-        # QProcess cannot start PowerShell scripts; the .cmd twin always
-        # sits next to it in an npm bin dir
+    if node is None:
+        # the shim needs node too — say WHICH piece is missing before the
+        # generic 'CLI failed to start' shows up
+        logger.warning(
+            "node.exe not found on PATH or in the standard install "
+            "locations; %s will likely fail to start", tool_path,
+        )
+    else:
+        logger.warning(
+            "%s: no node_modules entry next to the shim (pnpm/yarn "
+            "layout?) — falling back to the launcher; stop relies on "
+            "tree-kill", tool_path,
+        )
+    if ext.lower() in (".ps1", ""):
+        # QProcess cannot start PowerShell or extensionless sh scripts
+        # (shutil.which on Python <=3.11 can return the bare sh shim);
+        # the .cmd twin always sits next to them in an npm-style bin dir
         cmd = root + ".cmd"
         if os.path.isfile(cmd):
             return cmd, []
     return tool_path, []
+
+
+def _kill_tool_proc(proc: QProcess) -> None:
+    """Kill a node-CLI QProcess without leaving orphans.
+
+    On Windows, when the process is a cmd.exe launcher shim (the pnpm/yarn
+    fallback in _spawn_spec), QProcess.kill() reaps only cmd.exe and the
+    node child survives — a leaked `marp -w` keeps rewriting the output
+    forever, even after IDA exits. taskkill /T takes the whole tree down
+    regardless of layout; plain kill() is the fallback (and the POSIX
+    path, where process groups make it a non-issue for our direct spawns).
+    """
+    if _IS_WIN and proc.state() != QProcess.ProcessState.NotRunning:
+        pid = int(proc.processId())
+        if pid > 0:
+            try:
+                import subprocess
+
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(pid)],
+                    capture_output=True, timeout=5,
+                    creationflags=0x08000000,  # CREATE_NO_WINDOW
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                logger.exception("taskkill failed; falling back to kill()")
+    proc.kill()
+    proc.waitForFinished(1000)
 
 
 def _read_deck(path: str) -> str | None:
@@ -807,12 +868,20 @@ class DeckViewBase(QWidget):
         # `#!/usr/bin/env node` shebangs need node on PATH, which a
         # Dock-launched IDA doesn't have — node sits next to the tool script
         env = QProcessEnvironment.systemEnvironment()
-        tool_dir = os.path.dirname(tool_path)
+        dirs = [os.path.dirname(tool_path)]
+        if _IS_WIN:
+            # a launcher-shim fallback re-invokes `node` via PATH; when IDA
+            # itself was started without the nodejs PATH entry, inject the
+            # probed location so the shim can still work
+            node = _find_node()
+            if node:
+                dirs.append(os.path.dirname(node))
         path = env.value("PATH", "")
-        if tool_dir not in path.split(os.pathsep):
-            env.insert(
-                "PATH", f"{tool_dir}{os.pathsep}{path}" if path else tool_dir
-            )
+        parts = path.split(os.pathsep)
+        prepend = [d for d in dirs if d and d not in parts]
+        if prepend:
+            joined = os.pathsep.join(prepend)
+            env.insert("PATH", f"{joined}{os.pathsep}{path}" if path else joined)
         return env
 
     @staticmethod
@@ -938,9 +1007,8 @@ class DeckViewBase(QWidget):
             if _IS_WIN:
                 # terminate() posts WM_CLOSE, which a windowless console
                 # node ignores — the graceful phase would just freeze the
-                # UI thread for the full 1500ms (measured) before kill()
-                proc.kill()
-                proc.waitForFinished(1000)
+                # UI thread for the full 1500ms (measured) before the kill
+                _kill_tool_proc(proc)
             else:
                 proc.terminate()  # SIGTERM: slidev exits promptly
                 if not proc.waitForFinished(1500):
@@ -1097,8 +1165,7 @@ class DeckViewBase(QWidget):
                 proc.readyReadStandardError.disconnect()
             except (RuntimeError, TypeError):
                 pass
-            proc.kill()
-            proc.waitForFinished(1000)
+            _kill_tool_proc(proc)
 
     def _on_marp_error(self, _error) -> None:
         # a failed start means no render is coming

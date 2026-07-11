@@ -12,8 +12,10 @@ multi-agent review on the Windows machine converged on findings 1, 5, 6
 and 7 and fixed them in d0002a8 (verified live: `com_handlers_drained`
 regression check added to the smoke test); finding 2 was tested live and
 REFUTED (Korean+space deck path renders with live links under the current
-PrettyDecoded URL — WebView2's Navigate tolerates it). Open: 3, 4, 8, 9.
-Per-item status notes inline below.
+PrettyDecoded URL — WebView2's Navigate tolerates it). Findings 3 and 4
+were fixed in the follow-up (tree-kill + node probing; orphan reproduced
+and fix verified live). Open: 8, plus 9's scoop-glob and license-provenance
+nits. Per-item status notes inline below.
 
 ## Proven statically (do not re-verify)
 
@@ -49,18 +51,25 @@ Per-item status notes inline below.
    `QUrl.fromLocalFile(...).toString()` default emits raw spaces/Korean;
    use `toString(QUrl.ComponentFormattingOption.FullyEncoded)`. A deck
    under a Korean/space path may navigate to a blank pane silently.
-3. **pnpm/yarn installs orphan the renderer on kill**
-   (`deck_view.py:348`). `_spawn_spec`'s node_modules entry resolution
-   only knows npm-prefix / nvm-windows layouts; pnpm/yarn fall back to
-   the .cmd shim, so `QProcess.kill()` reaps only cmd.exe and the node
-   child survives (re-rendering forever, also after IDA exits). Also:
+3. **[FIXED — tree-kill]** **pnpm/yarn installs orphan the renderer on
+   kill** (`deck_view.py:348`). `_spawn_spec`'s node_modules entry
+   resolution only knows npm-prefix / nvm-windows layouts; pnpm/yarn fall
+   back to the .cmd shim, so `QProcess.kill()` reaps only cmd.exe and the
+   node child survives (re-rendering forever, also after IDA exits). Also:
    on Python ≤3.11 `shutil.which` can return the extensionless sh shim,
    which QProcess cannot start at all.
-4. **npm-prefix layout has no node next to the shim**
+   *Fix: `_kill_tool_proc` kills the process TREE via taskkill /T on
+   Windows (verified live: shim-spawned `marp -w` orphaned its node under
+   plain kill(), none under tree-kill, 172ms); the shim fallback now logs;
+   extensionless shims reroute to the .cmd twin like .ps1.*
+4. **[FIXED]** **npm-prefix layout has no node next to the shim**
    (`deck_view.py:787`). `%APPDATA%\npm` holds marp.cmd but node.exe
    lives in `%ProgramFiles%\nodejs`; with node off PATH both spawn
    strategies fail as a bare 'marp CLI failed to start'. Probe
    `%ProgramFiles%\nodejs` for node and say WHICH piece is missing.
+   *Fix: `_find_node` probes ProgramFiles / NVM_SYMLINK past PATH, its
+   directory is injected into the tool PATH so shims work, and a missing
+   node now logs exactly that before the generic failure.*
 5. **[FIXED d0002a8]** **`_stop_slidev` freezes the UI ~1.5s on Windows**
    (`deck_view.py:919`). `terminate()` posts WM_CLOSE, which a console
    node ignores, so `waitForFinished(1500)` always times out before
