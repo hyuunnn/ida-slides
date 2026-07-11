@@ -223,5 +223,11 @@ chrome.webview.postMessage → WebMessageReceived); both bridges land in
 
 ## Outstanding cleanups
 
-- (none currently — the three-copy linkify item resolved itself when the
-  fallback renderers were deleted; only USER_JS remains)
+- High-DPI on Windows is unverified: every WebView2 check so far ran on a
+  100%-scale display (2026-07). On a 125%/150% monitor confirm the deck
+  is crisp and fills the pane; if not, the fix is RasterizationScale /
+  bounds handling in webview2_view. (marp/slidev flows, the watchdog
+  retry, and the COM layer are all verified — see tests/
+  test_webview2_standalone.py.)
+- A macOS counterpart of the standalone renderer test (WKWebView outside
+  IDA) is being written on the mac side; mirror the Windows harness.
