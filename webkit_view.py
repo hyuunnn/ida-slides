@@ -282,6 +282,17 @@ def _front_matter_lines(md_path: str) -> list[str]:
     return []
 
 
+def _yaml_scalar(raw: str) -> str:
+    """Normalize a front-matter scalar: drop an unquoted inline comment and
+    surrounding quotes so `marp: false # opt out` reads as `false`."""
+    v = raw.strip()
+    if v[:1] not in ("'", '"'):
+        v = v.split("#", 1)[0].strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+        v = v[1:-1]
+    return v
+
+
 def detect_engine(md_path: str) -> str:
     """Pick the presentation engine for a Markdown deck: 'marp' or 'slidev'.
 
@@ -294,7 +305,7 @@ def detect_engine(md_path: str) -> str:
     for line in fm:
         m = re.match(r"^([A-Za-z_-]+)\s*:\s*(.*)$", line)
         if m:
-            keys[m.group(1)] = m.group(2).strip()
+            keys[m.group(1)] = _yaml_scalar(m.group(2))
 
     override = keys.get("ida-slides-engine", "").lower()
     if override in ("marp", "slidev"):
@@ -443,8 +454,8 @@ class MarpWebKitView(QWidget):
         self._marp: str | None = None
         self._proc: QProcess | None = None       # long-lived `marp -w` watcher
         self._watch_key: tuple[str, str] | None = None
-        self._prepared_changed = False
         self._pending_out: str | None = None      # html we're waiting on
+        self._pending_restore: str | None = None  # hash to restore on that load
         self._render_timeout: QTimer | None = None
         self._last_marp_err: str | None = None    # last error line from marp
         self.engine_label = "Marp"
@@ -524,7 +535,7 @@ class MarpWebKitView(QWidget):
     # ------------------------------------------------------------------
     # Public surface (same as the other renderers)
     # ------------------------------------------------------------------
-    def load(self, path: str) -> None:
+    def load(self, path: str, restore_hash: str | None = None) -> None:
         self._path = path
         ext = os.path.splitext(path)[1].lower()
         is_md = ext in (".md", ".markdown")
@@ -532,12 +543,15 @@ class MarpWebKitView(QWidget):
         self.engine_label = "Slidev" if engine == "slidev" else "Marp"
         if self._web is None:
             return  # _attach_webview picks it up
+        # clear any stale error banner (e.g. "marp watcher exited") so it
+        # doesn't linger over a freshly loaded deck
+        self._show_status("")
         if engine == "slidev":
             self._stop_marp()
             self._run_slidev(path)
         elif is_md:
             self._stop_slidev()
-            self._run_marp(path)
+            self._run_marp(path, restore_hash)
         else:
             self._stop_slidev()
             self._stop_marp()
@@ -554,13 +568,29 @@ class MarpWebKitView(QWidget):
             except Exception:
                 logger.exception("slidev reload failed")
             return
+
+        # capture the current slide's hash, then reload the SAME deck and
+        # restore it. Bind both to `path`: if the user switches decks while
+        # the async capture is in flight, abandon the stale reload instead
+        # of reloading the old deck or restoring its hash onto the new one.
+        path = self._path
+
+        def _captured(result, _error) -> None:
+            try:
+                if self._path != path:
+                    return  # deck switched since reload started
+                h = result if isinstance(result, str) and result else None
+                self.load(path, restore_hash=h)
+            except Exception:
+                logger.exception("hash-capture completion failed")
+
         try:
             self._web.evaluateJavaScript_completionHandler_(
-                "window.location.hash", self._on_hash_captured
+                "window.location.hash", _captured
             )
         except Exception:
             logger.exception("hash capture failed; reloading cold")
-            self.load(self._path)
+            self.load(path)
 
     def on_source_changed(self) -> None:
         """The source file was saved."""
@@ -600,12 +630,14 @@ class MarpWebKitView(QWidget):
     # ------------------------------------------------------------------
     # deck preprocessing (@name[a:b] pseudocode embeds)
     # ------------------------------------------------------------------
-    def _prepare_md(self, md_path: str) -> str:
-        """Expand embed tokens into a hidden sibling md; returns its path.
+    def _prepare_md(self, md_path: str) -> tuple[str, bool]:
+        """Expand embed tokens into a hidden sibling md.
 
-        Falls back to the original file when preprocessing fails. The file
-        is only rewritten when its content changes, so Slidev's HMR is not
-        triggered spuriously.
+        Returns (path, changed): the sibling's path (or the original file on
+        failure) and whether its content differs from the last render, so a
+        caller can tell whether a re-render will actually happen. `changed`
+        is returned per call rather than stored, so an early failure can't
+        leak a stale flag into a later save.
         """
         try:
             import deck_preprocess
@@ -615,7 +647,7 @@ class MarpWebKitView(QWidget):
             expanded = deck_preprocess.expand_embeds(text)
         except Exception:
             logger.exception("embed preprocessing failed for %s", md_path)
-            return md_path
+            return md_path, True  # unknown → assume a render is needed
 
         stem = os.path.splitext(os.path.basename(md_path))[0]
         out = os.path.join(os.path.dirname(md_path), f".{stem}.ida-slides.md")
@@ -624,15 +656,15 @@ class MarpWebKitView(QWidget):
             if os.path.exists(out):
                 with open(out, encoding="utf-8", errors="replace") as f:
                     old = f.read()
-            self._prepared_changed = old != expanded
-            if self._prepared_changed:
+            changed = old != expanded
+            if changed:
                 with open(out, "w", encoding="utf-8") as f:
                     f.write(expanded)
         except OSError:
             logger.exception("cannot write preprocessed deck %s", out)
-            return md_path
+            return md_path, True
         self._generated_md = out
-        return out
+        return out, changed
 
     # ------------------------------------------------------------------
     # process helpers
@@ -669,7 +701,7 @@ class MarpWebKitView(QWidget):
             return
 
         self._stop_slidev()
-        prepared = self._prepare_md(md_path)
+        prepared, _changed = self._prepare_md(md_path)
 
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
@@ -757,7 +789,7 @@ class MarpWebKitView(QWidget):
     # ------------------------------------------------------------------
     # marp CLI pipeline
     # ------------------------------------------------------------------
-    def _run_marp(self, md_path: str) -> None:
+    def _run_marp(self, md_path: str, restore_hash: str | None = None) -> None:
         """Render via a persistent `marp -w` watcher.
 
         The watcher is started once per deck and re-renders whenever the
@@ -775,7 +807,7 @@ class MarpWebKitView(QWidget):
 
         stem = os.path.splitext(os.path.basename(md_path))[0]
         out = os.path.join(os.path.dirname(md_path), f".{stem}.ida-slides.html")
-        prepared = self._prepare_md(md_path)
+        prepared, changed = self._prepare_md(md_path)
 
         # start (or reuse) the watcher; `marp -w` logs "=> <out>" to stderr
         # each time it finishes a render, which is our completion signal —
@@ -800,10 +832,11 @@ class MarpWebKitView(QWidget):
         # await the next "=> out" render-complete line before loading. A
         # reused watcher whose input didn't change never re-renders, so it
         # would never log again — load what's already there directly.
-        if not fresh and not self._prepared_changed and os.path.isfile(out):
-            self._finish_render(out)
+        if not fresh and not changed and os.path.isfile(out):
+            self._finish_render(out, restore_hash)
         else:
             self._pending_out = out
+            self._pending_restore = restore_hash
             self._arm_render_timeout()
 
     def _arm_render_timeout(self) -> None:
@@ -824,17 +857,21 @@ class MarpWebKitView(QWidget):
         detail = f": {self._last_marp_err}" if self._last_marp_err else ""
         self._show_status(f"marp render failed{detail}")
 
-    def _finish_render(self, out: str) -> None:
+    def _finish_render(self, out: str, restore_hash: str | None = None) -> None:
         """A render for `out` completed — swap it into the view."""
         if self._render_timeout is not None:
             self._render_timeout.stop()
             self._render_timeout.deleteLater()
             self._render_timeout = None
         self._pending_out = None
+        self._pending_restore = None
         self._show_status("")
         if self._generated and self._generated != out:
             self._remove_generated()
         self._generated = out
+        # set the restore hash immediately before starting THIS navigation,
+        # so no earlier in-flight load's didFinishNavigation can consume it
+        self._pending_hash = restore_hash
         self._load_html(out)
 
     def _stop_marp(self) -> None:
@@ -843,6 +880,7 @@ class MarpWebKitView(QWidget):
             self._render_timeout.deleteLater()
             self._render_timeout = None
         self._pending_out = None
+        self._pending_restore = None
         self._watch_key = None
         if self._proc is not None:
             # disconnect before killing: the dead watcher's queued signals
@@ -888,7 +926,7 @@ class MarpWebKitView(QWidget):
             # clears _pending_out, so a second arrow line in the same
             # buffer won't re-trigger.
             if "=>" in line and self._pending_out is not None:
-                self._finish_render(self._pending_out)
+                self._finish_render(self._pending_out, self._pending_restore)
             elif "[ ERROR ]" in line or "error" in line.lower():
                 self._last_marp_err = line
 
@@ -930,15 +968,6 @@ class MarpWebKitView(QWidget):
             self._web.loadFileURL_allowingReadAccessToURL_(url, root)
         except Exception:
             logger.exception("loadFileURL failed")
-
-    def _on_hash_captured(self, result, error) -> None:
-        # PyObjC completion callback — must never raise
-        try:
-            self._pending_hash = result if isinstance(result, str) and result else None
-            if self._path:
-                QTimer.singleShot(0, lambda: self.load(self._path))
-        except Exception:
-            logger.exception("hash-capture completion failed")
 
     def do_jump(self, name: str, line: int | None) -> None:
         """Navigate IDA without losing keyboard control of the deck.
