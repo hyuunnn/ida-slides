@@ -137,7 +137,9 @@ def _jump_to_pseudocode_line(ea: int, line: int, name: str) -> bool:
 
                 cur, _x, _y = ida_kernwin.get_custom_viewer_place(ct, False)
                 landed = ida_kernwin.place_t_as_simpleline_place_t(cur).n
-                if landed != lnnum and attempt < 6:
+                if landed == lnnum:
+                    _flash_line(vu, lnnum)
+                elif attempt < 6:
                     QTimer.singleShot(60, lambda: _position(attempt + 1))
             except Exception:
                 if attempt < 6:
@@ -154,6 +156,58 @@ def _jump_to_pseudocode_line(ea: int, line: int, name: str) -> bool:
             "jumping to the function instead\n"
         )
         return _jump_no_focus(ea)
+
+
+# landing flash: tint for the pseudocode line a :N jump arrived at, so the
+# audience can see where the view went (the caret alone is easy to miss on
+# a projector). IDA colors are BGR; this is the deck's #4ea1ff link blue.
+_FLASH_MS = 1500
+_FLASH_COLOR = 0xFFA14E
+
+
+def _flash_line(vu, lnnum: int) -> None:
+    import ida_hexrays
+    import ida_kernwin
+
+    try:
+        color = _FLASH_COLOR
+        sv = vu.cfunc.get_pseudocode()
+        if lnnum >= sv.size():
+            return
+        old = sv[lnnum].bgcolor
+        if old == color:
+            return  # still flashing from a previous jump to the same line
+        sv[lnnum].bgcolor = color
+        ida_kernwin.refresh_custom_viewer(vu.ct)
+
+        # re-resolve the viewer at restore time instead of capturing `vu`:
+        # the widget may have been closed or re-decompiled meanwhile, and
+        # touching a stale vdui can crash IDA
+        title = ida_kernwin.get_widget_title(vu.ct)
+        entry = vu.cfunc.entry_ea
+
+        def _restore() -> None:
+            try:
+                w = ida_kernwin.find_widget(title)
+                if w is None:
+                    return
+                vu2 = ida_hexrays.get_widget_vdui(w)
+                if vu2 is None or vu2.cfunc is None:
+                    return
+                if vu2.cfunc.entry_ea != entry:
+                    return  # viewer shows another function now
+                sv2 = vu2.cfunc.get_pseudocode()
+                if lnnum < sv2.size() and sv2[lnnum].bgcolor == color:
+                    sv2[lnnum].bgcolor = old
+                    ida_kernwin.refresh_custom_viewer(vu2.ct)
+            except Exception:
+                logger.exception("landing flash restore failed")
+
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(_FLASH_MS, _restore)
+    except Exception:
+        logger.exception("landing flash failed")
 
 
 def linkify_html(

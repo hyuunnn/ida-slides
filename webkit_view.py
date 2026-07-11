@@ -149,7 +149,14 @@ USER_JS = r"""
     document.addEventListener('mousemove', function (ev) {
         mouseX = ev.clientX;
         mouseY = ev.clientY;
+        // mouseout alone can't be trusted to close the tip: a keyboard
+        // slide change hides/replaces the hovered link without firing it
+        if (tip && tip.style.display === 'block' &&
+            (!hoverEl || !hoverEl.contains(ev.target)))
+            hideTip();
     }, true);
+    document.addEventListener('keydown', function () { hideTip(); }, true);
+    window.addEventListener('hashchange', function () { hideTip(); });
 
     function showTip(el, text) {
         if (!tip) {
@@ -173,6 +180,8 @@ USER_JS = r"""
 
     function hideTip() {
         if (tip) tip.style.display = 'none';
+        if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+        hoverEl = null;   // also blocks a late preview reply from re-showing
     }
 
     window.__idaSlidesPreview = function (id, key, text) {
