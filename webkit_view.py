@@ -865,6 +865,13 @@ class MarpWebKitView(QWidget):
 
     def _finish_render(self, out: str, restore_hash: str | None = None) -> None:
         """A render for `out` completed — swap it into the view."""
+        if not os.path.isfile(out):
+            # the "=> out" line arrived but the file is gone (deleted, or a
+            # write that failed after logging); loading it would blank the
+            # view silently — keep waiting for a good render instead
+            detail = f": {self._last_marp_err}" if self._last_marp_err else ""
+            self._show_status(f"marp output missing{detail}")
+            return
         self._clear_render_timeout()
         self._pending_out = None
         self._pending_restore = None
@@ -924,11 +931,13 @@ class MarpWebKitView(QWidget):
                 continue
             logger.debug("marp: %s", line)
             # marp logs "[  INFO ] <in> => <out>" after each render; the
-            # arrow line is our render-complete signal. _finish_render
-            # clears _pending_out, so a second arrow line in the same
-            # buffer won't re-trigger.
-            if "=>" in line and self._pending_out is not None:
-                self._finish_render(self._pending_out, self._pending_restore)
+            # arrow line naming OUR output is the render-complete signal.
+            # Requiring the basename avoids an unrelated "=>" log firing a
+            # load; _finish_render clears _pending_out, so a second matching
+            # line in the same buffer won't re-trigger.
+            out = self._pending_out
+            if out is not None and "=>" in line and os.path.basename(out) in line:
+                self._finish_render(out, self._pending_restore)
             elif "[ ERROR ]" in line or "error" in line.lower():
                 self._last_marp_err = line
 
