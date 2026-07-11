@@ -234,5 +234,3 @@ chrome.webview.postMessage → WebMessageReceived); both bridges land in
   bounds handling in webview2_view. (marp/slidev flows, the watchdog
   retry, and the COM layer are all verified — see tests/
   test_webview2_standalone.py.)
-- A macOS counterpart of the standalone renderer test (WKWebView outside
-  IDA) is being written on the mac side; mirror the Windows harness.
