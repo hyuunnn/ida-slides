@@ -40,6 +40,7 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
         self._renderer_kind: str | None = None
         self._layout: QVBoxLayout | None = None
         self._status: QLabel | None = None
+        self._warn: QLabel | None = None
         self._status_base = ""
         self._last_lint: list[tuple[int, str]] | None = None
 
@@ -114,6 +115,10 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
         toolbar.addSeparator()
         self._status = QLabel("", parent)
         toolbar.addWidget(self._status)
+        # separate widget so the unresolved-refs tooltip only appears over
+        # the warning text itself, not the whole status area
+        self._warn = QLabel("", parent)
+        toolbar.addWidget(self._warn)
 
         self._watcher = DebouncedFileWatcher(parent)
         self._watcher.changed.connect(self._on_file_changed)
@@ -243,17 +248,18 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
     def _refresh_status(self) -> None:
         """Show the deck label plus a warning when @references are broken."""
         issues = self._lint_refs()
-        if self._status is None:
+        if self._status is not None:
+            self._status.setText(self._status_base)
+        if self._warn is None:
             return
-        text = self._status_base
         if issues:
-            text += f"   ⚠ {len(issues)} unresolved @ref(s)"
-            self._status.setToolTip(
+            self._warn.setText(f"  ⚠ {len(issues)} unresolved @ref(s)")
+            self._warn.setToolTip(
                 "\n".join(f"{tok} — slide {n}" for n, tok in issues)
             )
         else:
-            self._status.setToolTip("")
-        self._status.setText(text)
+            self._warn.setText("")
+            self._warn.setToolTip("")
 
     def _lint_refs(self) -> list[tuple[int, str]]:
         """Check every @reference in the deck against the open IDB."""
