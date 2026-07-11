@@ -85,15 +85,20 @@ to Python via a WKScriptMessageHandler.
 - **Save-time batch rendering, not incremental.** Every save re-runs
   the preprocess; marp runs as a persistent `-w` watcher (one per deck,
   stopped on cleanup / file switch / engine switch) that re-renders when
-  the prepared md is rewritten, and the view reloads when the output
-  html's mtime advances. Tradeoff accepted for pixel-perfect themes;
-  costs are blunted by the 200ms debounce, Hex-Rays' internal cfunc
-  cache, slice-only tag_remove in `decompile_lines`, and an output-diff
-  guard. The diff guard sits intentionally AFTER `expand_embeds`: a
-  same-content save is the documented gesture for refreshing embeds
-  after an IDB rename, so identical input must not skip expansion.
-  Status label policy: error messages only — no transient "rendering…"
-  text (the label popping in reflows the pane on every save).
+  the prepared md is rewritten. The view reloads when marp logs its
+  render-complete line (`[ INFO ] … => <out>`) on stderr — NOT on mtime,
+  which can't tell this save's render from an earlier one and can be seen
+  mid-write. A 15s timeout only shows a "taking longer" heads-up; a dead
+  watcher is caught by `_on_marp_exit`. Tradeoff accepted for
+  pixel-perfect themes; costs are blunted by the 200ms debounce,
+  Hex-Rays' internal cfunc cache, slice-only tag_remove in
+  `decompile_lines`, and an output-diff guard. The diff guard sits
+  intentionally AFTER `expand_embeds`: a same-content save is the
+  documented gesture for refreshing embeds after an IDB rename, so
+  identical input must not skip expansion. Status label policy: error
+  messages only — no per-save "rendering…" text (the label popping in
+  reflows the pane on every save). The 15s "taking longer" notice is the
+  one allowed non-error message, since it fires only on an abnormal stall.
 - **Focus invariants.** Verified mechanics, easy to regress:
   - `jumpto(ea, -1, 0)` (no UIJMP_ACTIVATE) repositions without taking
     focus but does NOT raise a buried tab; `activate_widget(w, False)`

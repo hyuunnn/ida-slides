@@ -282,6 +282,10 @@ def _front_matter_lines(md_path: str) -> list[str]:
     return []
 
 
+# marp aligns its log tags, so the spacing varies: "[ ERROR ]", "[  WARN ]"
+_MARP_PROBLEM_RE = re.compile(r"\[\s*(error|warn)\s*\]", re.IGNORECASE)
+
+
 def _yaml_scalar(raw: str) -> str:
     """Normalize a front-matter scalar: drop an unquoted inline comment and
     surrounding quotes so `marp: false # opt out` reads as `false`."""
@@ -633,6 +637,15 @@ class MarpWebKitView(QWidget):
     # ------------------------------------------------------------------
     # deck preprocessing (@name[a:b] pseudocode embeds)
     # ------------------------------------------------------------------
+    @staticmethod
+    def _sibling(md_path: str, ext: str) -> str:
+        """Hidden `.<stem>.ida-slides.<ext>` next to the deck (single source
+        of the generated-file naming convention)."""
+        stem = os.path.splitext(os.path.basename(md_path))[0]
+        return os.path.join(
+            os.path.dirname(md_path), f".{stem}.ida-slides.{ext}"
+        )
+
     def _prepare_md(self, md_path: str) -> tuple[str, bool]:
         """Expand embed tokens into a hidden sibling md.
 
@@ -652,8 +665,7 @@ class MarpWebKitView(QWidget):
             logger.exception("embed preprocessing failed for %s", md_path)
             return md_path, True  # unknown → assume a render is needed
 
-        stem = os.path.splitext(os.path.basename(md_path))[0]
-        out = os.path.join(os.path.dirname(md_path), f".{stem}.ida-slides.md")
+        out = self._sibling(md_path, "md")
         try:
             old = None
             if os.path.exists(out):
@@ -808,8 +820,7 @@ class MarpWebKitView(QWidget):
             )
             return
 
-        stem = os.path.splitext(os.path.basename(md_path))[0]
-        out = os.path.join(os.path.dirname(md_path), f".{stem}.ida-slides.html")
+        out = self._sibling(md_path, "html")
         prepared, changed = self._prepare_md(md_path)
 
         # start (or reuse) the watcher; `marp -w` logs "=> <out>" to stderr
@@ -864,7 +875,7 @@ class MarpWebKitView(QWidget):
         # a slow-but-successful render.
         self._clear_render_timeout()
         if self._pending_out is not None:
-            self._show_status("marp still rendering…")
+            self._show_status("marp taking longer than usual")
 
     def _finish_render(self, out: str, restore_hash: str | None = None) -> None:
         """A render for `out` completed — swap it into the view."""
@@ -909,6 +920,11 @@ class MarpWebKitView(QWidget):
             proc.waitForFinished(1000)
 
     def _on_marp_error(self, _error) -> None:
+        # a failed start means no render is coming — drop the pending wait
+        # so the timeout doesn't later overwrite this with "still rendering…"
+        self._clear_render_timeout()
+        self._pending_out = None
+        self._pending_restore = None
         self._proc = None
         self._watch_key = None
         self._show_status("marp CLI failed to start")
@@ -941,7 +957,9 @@ class MarpWebKitView(QWidget):
             out = self._pending_out
             if out is not None and "=>" in line and os.path.basename(out) in line:
                 self._finish_render(out, self._pending_restore)
-            elif "[ ERROR ]" in line or "error" in line.lower():
+            elif _MARP_PROBLEM_RE.search(line):
+                # marp tags real problems "[ ERROR ]"/"[  WARN ]"; matching
+                # a bare "error" substring latches benign paths (error_x.md)
                 self._last_marp_err = line
 
     def _remove_generated(self) -> None:
