@@ -138,7 +138,11 @@ to Python via a WKScriptMessageHandler.
   (`@0xDEADBEEF`) render as live-looking links and silently fail on
   click — the lint warning is considered sufficient. IDA's native
   Close/Float/Fullscreen dock tooltips stay; only the unresolved-refs
-  warning label carries a plugin tooltip.
+  warning label carries a plugin tooltip. Saving/Reload never switches a
+  running slidev deck back to marp (the slidev save path skips
+  detect_engine on purpose — full loads would defeat Vite HMR): the
+  engine is chosen when work on a deck starts, and Open… is the
+  re-route path (owner decision, 2026-07).
 
 ## Working on the code
 
