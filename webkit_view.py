@@ -712,15 +712,25 @@ class MarpWebKitView(QWidget):
             and self._slidev_md == md_path
         ):
             self._prepare_md(md_path)
-            self._load_url(f"http://127.0.0.1:{self._slidev_port}/")
+            self._load_url(f"http://localhost:{self._slidev_port}/")
             return
 
         self._stop_slidev()
         prepared, _changed = self._prepare_md(md_path)
 
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            port = s.getsockname()[1]
+        # the port must be free on BOTH loopback families: Vite binds
+        # whichever it prefers (::1 on newer Node) and silently moves to
+        # another port if its pick is busy, leaving our poll stranded
+        for _ in range(20):
+            with socket.socket() as s:
+                s.bind(("127.0.0.1", 0))
+                port = s.getsockname()[1]
+            try:
+                with socket.socket(socket.AF_INET6) as s6:
+                    s6.bind(("::1", port))
+                break
+            except OSError:
+                continue
 
         self._show_status("slidev starting…")
         proc = QProcess(self)
@@ -750,7 +760,10 @@ class MarpWebKitView(QWidget):
             return
         self._poll_tries += 1
         try:
-            with socket.create_connection(("127.0.0.1", self._slidev_port), 0.2):
+            # "localhost", not 127.0.0.1: Vite on newer Node may bind the
+            # dev server to ::1 only, and create_connection tries every
+            # resolved address, so this works for either family.
+            with socket.create_connection(("localhost", self._slidev_port), 0.2):
                 pass
         except OSError:
             if self._poll_tries > 150:  # ~60s: give up
@@ -765,7 +778,7 @@ class MarpWebKitView(QWidget):
             return
         self._poll_timer.stop()
         self._show_status("")
-        self._load_url(f"http://127.0.0.1:{self._slidev_port}/")
+        self._load_url(f"http://localhost:{self._slidev_port}/")
 
     def _on_slidev_exit(self, exit_code: int, _status) -> None:
         if self._poll_timer is not None:
