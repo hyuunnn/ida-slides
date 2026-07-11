@@ -14,6 +14,10 @@ left. Write `@sub_401000`, `@main`, or `@0x401000` anywhere in the deck and it
 becomes a highlighted link; clicking it navigates IDA to that function or
 address.
 
+<p align="center">
+  <img src="assets/image.png" alt="A Slidev deck docked on the right of IDA, its @main / @sub_401000 / @0x401000 tokens rendered as clickable links, with the toolbar showing an unresolved-reference lint" width="960">
+</p>
+
 ## Usage
 
 1. `Ctrl+Shift+M` (or View → Open subviews → ida-slides: Open Slides…)

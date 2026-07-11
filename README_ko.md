@@ -14,6 +14,10 @@
 `@sub_401000`, `@main`, `@0x401000`처럼 쓰면 하이라이트된 링크가 되고, 클릭하면
 IDA가 해당 함수/주소로 이동합니다.
 
+<p align="center">
+  <img src="assets/image.png" alt="IDA 오른쪽에 도킹된 Slidev 덱 — @main / @sub_401000 / @0x401000 토큰이 클릭 가능한 링크로 렌더링되고, 툴바에 미해결 참조 lint가 표시된 모습" width="960">
+</p>
+
 ## 사용법
 
 1. `Ctrl+Shift+M` (또는 View → Open subviews → ida-slides: Open Slides…)
