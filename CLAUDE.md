@@ -228,6 +228,12 @@ chrome.webview.postMessage → WebMessageReceived); both bridges land in
 
 ## Outstanding cleanups
 
+- The Windows stack was statically audited from the mac side (vtable/GUID
+  cross-check vs the official SDK header: all match; no crash-class
+  defect). Findings (a COM handler leak, un-encoded file URLs, pnpm/yarn
+  shim orphans, a 1.5s _stop_slidev stall, watchdog races) plus the
+  ordered live-test checklist live in `win/VERIFICATION-NOTES.md` — work
+  through that on the Windows machine, smoke test in hand.
 - High-DPI on Windows is unverified: every WebView2 check so far ran on a
   100%-scale display (2026-07). On a 125%/150% monitor confirm the deck
   is crisp and fills the pane; if not, the fix is RasterizationScale /
