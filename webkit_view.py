@@ -576,11 +576,14 @@ class MarpWebKitView(QWidget):
         path = self._path
 
         def _captured(result, _error) -> None:
+            # PyObjC completion block — must never raise, and must not do IDA
+            # work inline: load() decompiles embeds, and the module rule is to
+            # defer all IDA work out of ObjC callbacks via singleShot(0)
             try:
                 if self._path != path:
                     return  # deck switched since reload started
                 h = result if isinstance(result, str) and result else None
-                self.load(path, restore_hash=h)
+                QTimer.singleShot(0, lambda: self.load(path, restore_hash=h))
             except Exception:
                 logger.exception("hash-capture completion failed")
 
