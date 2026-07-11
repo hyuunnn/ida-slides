@@ -190,6 +190,27 @@ def test_embed_regex_and_fences():
     eq(deck_preprocess.expand_embeds(inline).rstrip("\n"), inline)
 
 
+def test_file_watcher_stale_path():
+    from file_watcher import DebouncedFileWatcher
+
+    w = DebouncedFileWatcher()
+    fd, path = tempfile.mkstemp(suffix=".md")
+    os.close(fd)
+    try:
+        w.watch(path)
+        # a fileChanged queued for a previously watched file must be
+        # dropped entirely — restarting the debounce here used to emit a
+        # phantom changed() for the NEW path
+        w._on_file_changed(path + ".other")
+        truthy(not w._timer.isActive(), "stale signal must not arm debounce")
+        w._on_file_changed(path)
+        truthy(w._timer.isActive(), "matching signal arms debounce")
+    finally:
+        w.unwatch()
+        w.deleteLater()
+        os.unlink(path)
+
+
 def test_copy_ref_name_validation():
     import copy_ref
     truthy(copy_ref._NAME_OK.match("sub_401000"), "sub_")
@@ -279,6 +300,7 @@ ALL = [
     ("detect_engine_marp", test_detect_engine_marp),
     ("detect_engine_slidev", test_detect_engine_slidev),
     ("embed_regex_and_fences", test_embed_regex_and_fences),
+    ("file_watcher_stale_path", test_file_watcher_stale_path),
     ("copy_ref_name_validation", test_copy_ref_name_validation),
     ("resolve_ea", test_resolve_ea),
     ("decompile_lines", test_decompile_lines),

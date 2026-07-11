@@ -554,7 +554,14 @@ class DeckWebKitView(QWidget):
                 with open(path, encoding="utf-8", errors="replace") as f:
                     text = f.read()
             except OSError:
+                # don't fall through: detect_engine/_prepare_md would each
+                # retry the same unreadable file and start a pipeline for a
+                # deck that can't be read
                 logger.exception("cannot read deck %s", path)
+                self._show_status(
+                    f"cannot read deck: {os.path.basename(path)}"
+                )
+                return
         engine = detect_engine(path, text) if is_md else "marp"
         self.engine_label = "Slidev" if engine == "slidev" else "Marp"
         if self._web is None:
@@ -961,10 +968,15 @@ class DeckWebKitView(QWidget):
         self._pending_hash = restore_hash
         self._load_html(out)
 
-    def _stop_marp(self) -> None:
+    def _abandon_pending_render(self) -> None:
+        """No render is coming for the current wait — clear it, so the 15s
+        notice can't later overwrite a real message with "taking longer"."""
         self._clear_render_timeout()
         self._pending_out = None
         self._pending_restore = None
+
+    def _stop_marp(self) -> None:
+        self._abandon_pending_render()
         self._last_marp_err = None
         self._watch_key = None
         if self._proc is not None:
@@ -982,11 +994,8 @@ class DeckWebKitView(QWidget):
             proc.waitForFinished(1000)
 
     def _on_marp_error(self, _error) -> None:
-        # a failed start means no render is coming — drop the pending wait
-        # so the timeout doesn't later overwrite this with "still rendering…"
-        self._clear_render_timeout()
-        self._pending_out = None
-        self._pending_restore = None
+        # a failed start means no render is coming
+        self._abandon_pending_render()
         self._proc = None
         self._watch_key = None
         self._show_status("marp CLI failed to start")
@@ -998,12 +1007,7 @@ class DeckWebKitView(QWidget):
         self._drain_marp_stderr()
         self._proc = None
         self._watch_key = None
-        # a dead watcher means no render is coming — drop the pending wait
-        # so the timeout doesn't later overwrite this message with
-        # "taking longer" (same rule as _on_marp_error)
-        self._clear_render_timeout()
-        self._pending_out = None
-        self._pending_restore = None
+        self._abandon_pending_render()
         detail = f": {self._last_marp_err}" if self._last_marp_err else ""
         self._show_status(f"marp watcher exited (code {code}){detail}")
 
@@ -1026,10 +1030,19 @@ class DeckWebKitView(QWidget):
             out = self._pending_out
             if out is not None and "=>" in line and os.path.basename(out) in line:
                 self._finish_render(out, self._pending_restore)
-            elif _MARP_PROBLEM_RE.search(line):
-                # marp tags real problems "[ ERROR ]"/"[  WARN ]"; matching
-                # a bare "error" substring latches benign paths (error_x.md)
+                continue
+            # marp tags real problems "[ ERROR ]"/"[  WARN ]"; matching a
+            # bare "error" substring latches benign paths (error_x.md)
+            m = _MARP_PROBLEM_RE.search(line)
+            if m:
                 self._last_marp_err = line
+                # an ERROR means this save's render is NOT coming (the
+                # watcher survives and logs no "=>" line — verified with
+                # the marp CLI): stop waiting and surface the cause now,
+                # or the user only ever sees "taking longer than usual"
+                if m.group(1).lower() == "error" and self._pending_out:
+                    self._abandon_pending_render()
+                    self._show_status(line)
 
     def _remove_generated(self) -> None:
         for attr in ("_generated", "_generated_md"):
