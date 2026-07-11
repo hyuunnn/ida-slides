@@ -916,13 +916,20 @@ class MarpWebKitView(QWidget):
 
     def on_load_finished(self) -> None:
         """Called (via QTimer) after didFinishNavigation."""
-        if self._web is None or not self._pending_hash:
+        if self._web is None:
             return
         try:
-            import marp_markdown
+            js = ""
+            if self._pending_hash:
+                import marp_markdown
 
-            js = marp_markdown.bespoke_restore_js(self._pending_hash)
+                js = marp_markdown.bespoke_restore_js(self._pending_hash)
+                self._pending_hash = None
+            # Bespoke measures the viewport once at load; when the load
+            # lands mid-layout the slide stays scaled to a stale size
+            # (white deck + black letterbox corner) until something
+            # resizes the pane. Force a re-measure every load.
+            js += "window.dispatchEvent(new Event('resize'));"
             self._web.evaluateJavaScript_completionHandler_(js, None)
-            self._pending_hash = None
         except Exception:
-            logger.exception("hash restore failed")
+            logger.exception("post-load fixup failed")
