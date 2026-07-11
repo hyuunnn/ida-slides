@@ -32,6 +32,7 @@ from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 import ida_links
+import marp_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -277,20 +278,6 @@ def find_slidev() -> str | None:
     return _find_node_tool("slidev")
 
 
-def _front_matter_lines(md_path: str) -> list[str]:
-    try:
-        with open(md_path, encoding="utf-8", errors="replace") as f:
-            lines = f.read().splitlines()
-    except OSError:
-        return []
-    if not lines or lines[0].strip() != "---":
-        return []
-    for i in range(1, min(len(lines), 100)):
-        if lines[i].strip() == "---":
-            return lines[1:i]
-    return []
-
-
 # marp aligns its log tags, so the spacing varies: "[ ERROR ]", "[  WARN ]"
 _MARP_PROBLEM_RE = re.compile(r"\[\s*(error|warn)\s*\]", re.IGNORECASE)
 
@@ -306,14 +293,21 @@ def _yaml_scalar(raw: str) -> str:
     return v
 
 
-def detect_engine(md_path: str) -> str:
+def detect_engine(md_path: str, text: str | None = None) -> str:
     """Pick the presentation engine for a Markdown deck: 'marp' or 'slidev'.
 
     Explicit `ida-slides-engine: <engine>` in the front matter wins; then
     `marp: true` selects Marp; then any Slidev-specific front-matter key
     selects Slidev (if its CLI is installed). Marp is the default.
+    Pass `text` when the caller already read the deck to avoid a re-read.
     """
-    fm = _front_matter_lines(md_path)
+    if text is None:
+        try:
+            with open(md_path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            return "marp"
+    fm = marp_markdown.front_matter_lines(text)
     keys = {}
     for line in fm:
         m = re.match(r"^([A-Za-z_-]+)\s*:\s*(.*)$", line)
@@ -552,7 +546,16 @@ class DeckWebKitView(QWidget):
         self._path = path
         ext = os.path.splitext(path)[1].lower()
         is_md = ext in (".md", ".markdown")
-        engine = detect_engine(path) if is_md else "marp"
+        # read the deck once per load: engine detection and _prepare_md
+        # both need the text, and this runs on every save via reload()
+        text: str | None = None
+        if is_md:
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                logger.exception("cannot read deck %s", path)
+        engine = detect_engine(path, text) if is_md else "marp"
         self.engine_label = "Slidev" if engine == "slidev" else "Marp"
         if self._web is None:
             return  # _attach_webview picks it up
@@ -562,10 +565,10 @@ class DeckWebKitView(QWidget):
         self._discard_stale_generated(path)
         if engine == "slidev":
             self._stop_marp()
-            self._run_slidev(path)
+            self._run_slidev(path, text)
         elif is_md:
             self._stop_slidev()
-            self._run_marp(path, restore_hash)
+            self._run_marp(path, restore_hash, text)
         else:
             self._stop_slidev()
             self._stop_marp()
@@ -660,20 +663,22 @@ class DeckWebKitView(QWidget):
             os.path.dirname(md_path), f".{stem}.ida-slides.{ext}"
         )
 
-    def _prepare_md(self, md_path: str) -> tuple[str, bool]:
+    def _prepare_md(self, md_path: str, text: str | None = None) -> tuple[str, bool]:
         """Expand embed tokens into a hidden sibling md.
 
         Returns (path, changed): the sibling's path (or the original file on
         failure) and whether its content differs from the last render, so a
         caller can tell whether a re-render will actually happen. `changed`
         is returned per call rather than stored, so an early failure can't
-        leak a stale flag into a later save.
+        leak a stale flag into a later save. Pass `text` when the caller
+        already read the deck to avoid a re-read.
         """
         try:
             import deck_preprocess
 
-            with open(md_path, encoding="utf-8", errors="replace") as f:
-                text = f.read()
+            if text is None:
+                with open(md_path, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
             expanded = deck_preprocess.expand_embeds(text)
         except Exception:
             logger.exception("embed preprocessing failed for %s", md_path)
@@ -724,7 +729,7 @@ class DeckWebKitView(QWidget):
     # ------------------------------------------------------------------
     # slidev dev-server pipeline
     # ------------------------------------------------------------------
-    def _run_slidev(self, md_path: str) -> None:
+    def _run_slidev(self, md_path: str, text: str | None = None) -> None:
         slidev = find_slidev()
         if slidev is None:
             self._show_status(
@@ -737,12 +742,12 @@ class DeckWebKitView(QWidget):
             and self._slidev_proc.state() == QProcess.ProcessState.Running
             and self._slidev_md == md_path
         ):
-            self._prepare_md(md_path)
+            self._prepare_md(md_path, text)
             self._load_url(f"http://localhost:{self._slidev_port}/")
             return
 
         self._stop_slidev()
-        prepared, _changed = self._prepare_md(md_path)
+        prepared, _changed = self._prepare_md(md_path, text)
 
         # the port must be free on BOTH loopback families: Vite binds
         # whichever it prefers (::1 on newer Node) and silently moves to
@@ -794,33 +799,33 @@ class DeckWebKitView(QWidget):
         except OSError:
             if self._poll_tries > 150:  # ~60s: give up
                 self._poll_timer.stop()
-                err = bytes(
-                    self._slidev_proc.readAllStandardError()
-                ).decode("utf-8", "replace").strip().splitlines()
+                detail = self._proc_error_detail(self._slidev_proc)
                 self._show_status(
-                    "slidev did not come up"
-                    + (f": {err[-1]}" if err else "")
+                    "slidev did not come up" + (f": {detail}" if detail else "")
                 )
             return
         self._poll_timer.stop()
         self._show_status("")
         self._load_url(f"http://localhost:{self._slidev_port}/")
 
+    @staticmethod
+    def _proc_error_detail(proc: QProcess) -> str:
+        """Last non-empty stderr line (stdout as a fallback), for status
+        messages — the one place the drain/decode/last-line dance lives."""
+        for read in (proc.readAllStandardError, proc.readAllStandardOutput):
+            lines = bytes(read()).decode("utf-8", "replace").strip().splitlines()
+            if lines:
+                return lines[-1]
+        return ""
+
     def _on_slidev_exit(self, exit_code: int, _status) -> None:
         if self._poll_timer is not None:
             self._poll_timer.stop()
         proc, self._slidev_proc = self._slidev_proc, None
         if proc is not None and exit_code != 0:
-            err = bytes(proc.readAllStandardError()).decode(
-                "utf-8", "replace"
-            ).strip().splitlines()
-            out = bytes(proc.readAllStandardOutput()).decode(
-                "utf-8", "replace"
-            ).strip().splitlines()
-            detail = (err or out)
+            detail = self._proc_error_detail(proc)
             self._show_status(
-                f"slidev exited ({exit_code})"
-                + (f": {detail[-1]}" if detail else "")
+                f"slidev exited ({exit_code})" + (f": {detail}" if detail else "")
             )
 
     def _stop_slidev(self) -> None:
@@ -847,7 +852,12 @@ class DeckWebKitView(QWidget):
     # ------------------------------------------------------------------
     # marp CLI pipeline
     # ------------------------------------------------------------------
-    def _run_marp(self, md_path: str, restore_hash: str | None = None) -> None:
+    def _run_marp(
+        self,
+        md_path: str,
+        restore_hash: str | None = None,
+        text: str | None = None,
+    ) -> None:
         """Render via a persistent `marp -w` watcher.
 
         The watcher is started once per deck and re-renders whenever the
@@ -864,7 +874,7 @@ class DeckWebKitView(QWidget):
             return
 
         out = self._sibling(md_path, "html")
-        prepared, changed = self._prepare_md(md_path)
+        prepared, changed = self._prepare_md(md_path, text)
 
         # start (or reuse) the watcher; `marp -w` logs "=> <out>" to stderr
         # each time it finishes a render, which is our completion signal —
@@ -1129,8 +1139,6 @@ class DeckWebKitView(QWidget):
         try:
             js = ""
             if self._pending_hash:
-                import marp_markdown
-
                 js = marp_markdown.bespoke_restore_js(self._pending_hash)
                 self._pending_hash = None
             # Bespoke measures the viewport once at load; when the load

@@ -108,6 +108,27 @@ def test_strip_front_matter():
     eq(marp_markdown.strip_front_matter("no front matter\n"), "no front matter\n")
 
 
+def test_front_matter_lines():
+    eq(marp_markdown.front_matter_lines("---\na: 1\nb: 2\n---\nbody"),
+       ["a: 1", "b: 2"])
+    eq(marp_markdown.front_matter_lines("no front matter"), [])
+    # an indented '  ---' is not a closing delimiter (matches marp/YAML);
+    # strip_front_matter must agree on the same boundary
+    text = "---\na: 1\n  ---\nb: 2\n---\nbody\n"
+    eq(marp_markdown.front_matter_lines(text), ["a: 1", "  ---", "b: 2"])
+    eq(marp_markdown.strip_front_matter(text), "body\n")
+    # no length cap: a >100-line block must still be recognized (the old
+    # engine-detection scanner stopped at 100 lines and dropped overrides)
+    big = "---\n" + "\n".join(f"k{i}: 1" for i in range(150)) + "\n---\nbody"
+    eq(len(marp_markdown.front_matter_lines(big)), 150)
+
+
+def test_detect_engine_long_front_matter():
+    # the explicit override must win even past 100 front-matter lines
+    filler = "\n".join(f"k{i}: 1" for i in range(150))
+    eq(_detect(f"ida-slides-engine: slidev\n{filler}"), "slidev")
+
+
 def test_bespoke_restore_js():
     js = marp_markdown.bespoke_restore_js("#/3")
     truthy('"#/3"' in js, js)          # json-encoded, not repr
@@ -250,6 +271,8 @@ ALL = [
     ("split_slides_setext", test_split_slides_setext),
     ("split_slides_fence_length", test_split_slides_fence_length),
     ("strip_front_matter", test_strip_front_matter),
+    ("front_matter_lines", test_front_matter_lines),
+    ("detect_engine_long_front_matter", test_detect_engine_long_front_matter),
     ("bespoke_restore_js", test_bespoke_restore_js),
     ("yaml_scalar", test_yaml_scalar),
     ("node_version_key", test_node_version_key),

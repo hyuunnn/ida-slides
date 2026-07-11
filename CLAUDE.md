@@ -52,8 +52,10 @@ webkit_view.py           the one renderer: native WKWebView via PyObjC,
 ida_links.py             @token grammar (TOKEN_RE / JS_TOKEN_RE),
                          resolution, jumps
 deck_preprocess.py       embed expansion, hover-preview text, deck lint
-marp_markdown.py         front matter / slide splitting (lint slide
-                         numbers, bespoke hash-restore JS)
+marp_markdown.py         deck-structure single source: front-matter
+                         boundary, fence tracking (iter_fenced), slide
+                         splitting — engine detection, embed expansion
+                         and lint all build on it
 copy_ref.py              Copy @reference context-menu action
 file_watcher.py          debounced, rename-surviving file watcher
 ```
@@ -90,7 +92,9 @@ to Python via a WKScriptMessageHandler.
   watcher is caught by `_on_marp_exit`. Tradeoff accepted for
   pixel-perfect themes; costs are blunted by the 200ms debounce,
   Hex-Rays' internal cfunc cache, slice-only tag_remove in
-  `decompile_lines`, and an output-diff guard. The diff guard sits
+  `decompile_lines`, an output-diff guard, a single deck read per load
+  (shared by detect_engine and _prepare_md), and a per-pass name cache
+  in the lint. The diff guard sits
   intentionally AFTER `expand_embeds`: a same-content save is the
   documented gesture for refreshing embeds after an IDB rename, so
   identical input must not skip expansion. Status label policy: error

@@ -22,7 +22,6 @@ import ida_links
 
 logger = logging.getLogger(__name__)
 
-_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")  # keep in sync with marp_markdown
 _INLINE_CODE_RE = re.compile(r"`[^`]*`")
 
 EMBED_RE = re.compile(
@@ -151,14 +150,24 @@ def unresolved_refs(text: str) -> list[tuple[int, str]]:
 
     import marp_markdown
 
+    # one IDB lookup per distinct name for the whole pass: the same token
+    # tends to appear on many slides, and the trim loop below re-asks too
+    ok_cache: dict[str, bool] = {}
+
     def _ok(name: str) -> bool:
+        cached = ok_cache.get(name)
+        if cached is not None:
+            return cached
         ea = ida_links.resolve_ea(name)
         if ea == ida_idaapi.BADADDR:
-            return False
-        # raw hex parses unconditionally; only mapped addresses are jumpable
-        if name.lower().startswith("0x"):
-            return ida_segment.getseg(ea) is not None
-        return True
+            ok = False
+        elif name.lower().startswith("0x"):
+            # raw hex parses unconditionally; only mapped addresses jump
+            ok = ida_segment.getseg(ea) is not None
+        else:
+            ok = True
+        ok_cache[name] = ok
+        return ok
 
     out: list[tuple[int, str]] = []
     for idx, slide in enumerate(marp_markdown.parse_deck(text), start=1):
@@ -189,18 +198,10 @@ def _expand_line(line: str) -> str:
 
 def expand_embeds(text: str) -> str:
     """Expand all embed tokens in deck text, skipping fenced code blocks."""
-    out = []
-    fence: str | None = None
-    for line in text.splitlines():
-        m = _FENCE_RE.match(line)
-        if m:
-            marker = m.group(1)
-            if fence is None:
-                fence = marker
-            elif marker[0] == fence[0] and len(marker) >= len(fence):
-                # CommonMark closing-fence rule; see marp_markdown
-                fence = None
-            out.append(line)
-            continue
-        out.append(line if fence is not None else _expand_line(line))
+    import marp_markdown
+
+    out = [
+        line if in_code else _expand_line(line)
+        for line, in_code in marp_markdown.iter_fenced(text.splitlines())
+    ]
     return "\n".join(out) + ("\n" if text.endswith("\n") else "")
