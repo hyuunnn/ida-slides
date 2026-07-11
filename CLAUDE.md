@@ -151,6 +151,9 @@ to Python via a WKScriptMessageHandler.
 - Focus can be tested with IDA in the background via
   `mainwindow.focusWidget()`; `get_current_widget()` returns None when
   the app is inactive.
+- Regression tests live in `tests/test_in_ida.py` (run inside IDA — see
+  README "Tests"). Pure-logic checks always run; DB-dependent ones pick a
+  function from the open IDB. Add a case here when fixing a logic bug.
 - Owner tests UI changes himself and reports back; commit per feature
   batch (English, imperative), push only when asked.
 

@@ -108,6 +108,19 @@ ln -s "$(pwd)" ~/.idapro/plugins/ida-slides
 
 IDA 9.2+ (GUI) 필요.
 
+## 테스트
+
+플러그인이 IDA/Qt/WebKit에 묶여 있어 테스트는 `pytest`가 아니라 IDA 안에서
+실행합니다. 아무 IDB나 연 뒤 IDA Python 콘솔에서:
+
+```python
+exec(open("<repo>/tests/test_in_ida.py", encoding="utf-8").read())
+```
+
+순수 로직 검사(토큰 문법, 슬라이드 분할, front matter 파싱, 임베드·린트
+처리)는 항상 실행되고, DB 의존 검사(이름 해석, 디컴파일, 라이브 린트)는
+열려 있는 IDB에서 함수를 하나 골라 실행하며 IDB가 없으면 건너뜁니다.
+
 ## 구현 노트 (IDA 9.3)
 
 - `PluginForm.FormToPySideWidget`은 `__main__`에 `QtGui`가 있어야 하며, 없으면

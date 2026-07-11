@@ -114,6 +114,20 @@ ln -s "$(pwd)" ~/.idapro/plugins/ida-slides
 
 Requires IDA 9.2+ (GUI).
 
+## Tests
+
+The plugin is tied to IDA/Qt/WebKit, so tests run inside IDA rather than
+under a bare `pytest`. Open any IDB, then in the IDA Python console:
+
+```python
+exec(open("<repo>/tests/test_in_ida.py", encoding="utf-8").read())
+```
+
+Pure-logic checks (token grammar, slide splitting, front-matter parsing,
+embed/lint handling) always run; database-dependent checks (name
+resolution, decompilation, live lint) pick a function from whatever IDB is
+open and skip cleanly if none is loaded.
+
 ## Implementation notes (IDA 9.3)
 
 - `PluginForm.FormToPySideWidget` requires `QtGui` in `__main__` and fails
