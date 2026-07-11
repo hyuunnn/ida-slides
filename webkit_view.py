@@ -249,14 +249,23 @@ USER_JS = r"""
 """.replace("__IDA_TOKEN_RE__", ida_links.JS_TOKEN_RE)
 
 
+def _node_version_key(path: str) -> tuple[int, ...]:
+    """Numeric sort key for an nvm-style path segment (`.../v22.1.0/...`).
+    Paths without one (e.g. /opt/homebrew/bin) sort lowest."""
+    m = re.search(r"/v(\d+(?:\.\d+)*)/", path)
+    return tuple(int(n) for n in m.group(1).split(".")) if m else ()
+
+
 def _find_node_tool(name: str) -> str | None:
     path = shutil.which(name)
     if path:
         return path
     for pattern in _NODE_BIN_GLOBS:
-        hits = sorted(glob.glob(os.path.join(pattern, name)), reverse=True)
+        hits = glob.glob(os.path.join(pattern, name))
         if hits:
-            return hits[0]
+            # newest nvm version numerically — a plain string sort ranks
+            # v9.* above v22.*
+            return max(hits, key=_node_version_key)
     return None
 
 
@@ -537,7 +546,7 @@ class MarpWebKitView(QWidget):
         self._status.setVisible(bool(text))
 
     # ------------------------------------------------------------------
-    # Public surface (same as the other renderers)
+    # Public surface (consumed by presenter_form)
     # ------------------------------------------------------------------
     def load(self, path: str, restore_hash: str | None = None) -> None:
         self._path = path
@@ -560,6 +569,10 @@ class MarpWebKitView(QWidget):
         else:
             self._stop_slidev()
             self._stop_marp()
+            # set the restore hash immediately before starting THIS
+            # navigation (same rule as _finish_render), so a reload of a
+            # pre-rendered .html deck keeps its slide position
+            self._pending_hash = restore_hash
             self._load_html(path)
 
     def reload(self) -> None:

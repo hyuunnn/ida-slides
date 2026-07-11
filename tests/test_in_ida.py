@@ -133,6 +133,18 @@ def test_yaml_scalar():
     eq(webkit_view._yaml_scalar("true"), "true")
 
 
+def test_node_version_key():
+    # numeric ordering: a plain string sort would rank v9.* above v22.*
+    old = "/Users/u/.nvm/versions/node/v9.11.0/bin/marp"
+    new = "/Users/u/.nvm/versions/node/v22.1.0/bin/marp"
+    truthy(
+        webkit_view._node_version_key(new) > webkit_view._node_version_key(old),
+        "v22 outranks v9",
+    )
+    eq(webkit_view._node_version_key(new), (22, 1, 0))
+    eq(webkit_view._node_version_key("/opt/homebrew/bin/marp"), ())
+
+
 def _detect(front_matter):
     fd, path = tempfile.mkstemp(suffix=".md")
     try:
@@ -252,6 +264,7 @@ ALL = [
     ("strip_front_matter", test_strip_front_matter),
     ("bespoke_restore_js", test_bespoke_restore_js),
     ("yaml_scalar", test_yaml_scalar),
+    ("node_version_key", test_node_version_key),
     ("detect_engine_marp", test_detect_engine_marp),
     ("detect_engine_slidev", test_detect_engine_slidev),
     ("embed_regex_and_fences", test_embed_regex_and_fences),
