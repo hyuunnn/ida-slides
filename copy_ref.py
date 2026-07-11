@@ -3,6 +3,8 @@ current location on the clipboard.
 
 - Pseudocode view: `@func_name:LINE` (line omitted on the prototype line)
 - Disassembly/Hex view: `@name` when the address has a name, else `@0xADDR`
+- Names the token grammar can't re-parse (ObjC selectors, demangled C++)
+  also fall back to `@0xADDR` so the copied token always works
 """
 
 import logging

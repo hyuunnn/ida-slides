@@ -44,13 +44,14 @@ Requirements:
 CLIs are found via PATH, nvm, or Homebrew. `.html` files exported by marp-cli
 can also be opened directly.
 
-### Fallbacks on other platforms
+### Platform support
 
-- QtWebEngine (`pip install PySide6-Addons`), when importable, renders
-  marp-cli HTML decks the same way.
-- Without either, `.md` decks render in a built-in QTextBrowser slide viewer
-  (Marp syntax conventions, basic styling only). Needs the `markdown`
-  package.
+**macOS only** for now — the full pipeline (marp/slidev CLI + embedded
+web view) relies on the native WKWebView. On other platforms the plugin
+still loads with reduced fallbacks: a QtWebEngine view for pre-rendered
+marp `.html` files (if QtWebEngine is importable), or the built-in
+QTextBrowser viewer for `.md` (basic styling, needs the `markdown`
+package).
 
 ## `@` reference syntax
 
@@ -82,7 +83,9 @@ Going the other way: right-click in the disassembly, pseudocode, or hex view
 and pick **Copy @reference** — the token for that spot lands on the
 clipboard, ready to paste into your deck. Select several pseudocode lines
 first and it captures the range as an embed token `@name[lo:hi]`; otherwise
-it copies `@name:line` (pseudocode), `@name`, or `@0xADDR` for unnamed bytes.
+it copies `@name:line` (pseudocode) or `@name`. Unnamed addresses — and
+names the `@` token grammar can't express, like Objective-C selectors —
+are copied as `@0xADDR` so the token always works when pasted.
 
 Jumps never take keyboard focus away from the deck, so you keep driving
 slides with the arrow keys without clicking back in.

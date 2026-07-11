@@ -43,12 +43,13 @@ front matter에 `ida-slides-engine: marp` 또는 `ida-slides-engine: slidev`를 
 CLI는 PATH, nvm, Homebrew 순으로 탐색합니다. marp-cli로 내보낸 `.html` 파일도
 직접 열 수 있습니다.
 
-### 다른 플랫폼에서의 폴백
+### 플랫폼 지원
 
-- QtWebEngine(`pip install PySide6-Addons`)이 임포트 가능하면 marp-cli HTML
-  덱을 같은 방식으로 렌더링합니다.
-- 둘 다 없으면 `.md` 덱은 내장 QTextBrowser 슬라이드 뷰어로 렌더링됩니다
-  (Marp 문법 규칙 지원, 기본 스타일만). `markdown` 패키지가 필요합니다.
+현재 **macOS 전용**입니다 — 전체 파이프라인(marp/slidev CLI + 임베디드
+웹뷰)이 네이티브 WKWebView에 의존합니다. 다른 플랫폼에서도 플러그인은
+로드되며 축소된 폴백으로 동작합니다: 미리 렌더된 marp `.html`은
+QtWebEngine(임포트 가능한 경우)으로, `.md`는 내장 QTextBrowser 뷰어로
+표시됩니다 (기본 스타일만, `markdown` 패키지 필요).
 
 ## `@` 참조 문법
 
@@ -77,8 +78,9 @@ CLI는 PATH, nvm, Homebrew 순으로 탐색합니다. marp-cli로 내보낸 `.ht
 반대 방향도 됩니다: 디스어셈블리·의사코드·헥스 뷰에서 우클릭 → **Copy
 @reference** — 그 위치의 토큰이 클립보드에 복사되어 덱에 바로 붙여넣을 수
 있습니다. 의사코드에서 여러 줄을 드래그하면 그 범위를 임베드 토큰
-`@이름[lo:hi]`로 잡고, 아니면 `@이름:라인`(의사코드)·`@이름`·이름 없는
-주소는 `@0x주소`를 복사합니다.
+`@이름[lo:hi]`로 잡고, 아니면 `@이름:라인`(의사코드)·`@이름`을 복사합니다.
+이름이 없는 주소나 `@` 토큰 문법으로 표현할 수 없는 이름(Objective-C
+셀렉터 등)은 붙여넣어도 항상 동작하도록 `@0x주소`로 복사합니다.
 
 점프해도 키보드 포커스는 덱에 그대로 남으므로,
 다시 클릭할 필요 없이 방향키로 계속 슬라이드를 넘길 수 있습니다.
