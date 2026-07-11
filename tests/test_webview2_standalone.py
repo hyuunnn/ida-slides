@@ -14,11 +14,14 @@ controller → user-script injection → postMessage bridge → ExecuteScript
 round-trip → new-window suppression → teardown.
 
 Part 2 — renderer E2E (needs PySide6 + the marp CLI; skipped otherwise):
-QApplication + DeckWebView2View + the real marp -w pipeline: tool
-discovery, render-complete detection, navigation, USER_JS linkification of
-@tokens in the DOM, and the save cycle (on_source_changed → reload with
-hash capture → re-render), proven by a content MARKER that must change —
-a silently no-op reload cannot pass.
+QApplication + DeckWebView2View + the real marp -w pipeline, four phases:
+initial render (tool discovery, render-complete detection, USER_JS
+linkification), plain reload() on an unchanged deck (the _run_marp
+`not fresh and not changed` fast path — a document tag must vanish, so a
+silently no-op reload cannot pass), the save cycle (on_source_changed →
+reload with hash capture → re-render, proven by a content MARKER), and a
+rapid double save (latest content must win — the stale-render latch
+regression, mirroring the macOS harness).
 
 Exit code 0 = all executed checks passed (skips are fine), 1 = failure.
 """
@@ -50,8 +53,20 @@ def check(name: str, ok, detail: str = "") -> bool:
 # from a second process fails with ERROR_INVALID_STATE (0x8007139f) — so
 # sharing the plugin's folder would make this test fail whenever an IDA
 # with ida-slides is running, which is exactly when you want to run it
+_TMP_PREFIXES = ("ida-slides-test-udf-", "ida-slides-wv2-", "ida-slides-e2e-")
+
+
 def _private_udf() -> str:
-    return tempfile.mkdtemp(prefix="ida-slides-test-udf-")
+    return tempfile.mkdtemp(prefix=_TMP_PREFIXES[0])
+
+
+def _sweep_stale_test_dirs() -> None:
+    """Reclaim temp dirs earlier runs could not delete (WebView2's browser
+    shuts down asynchronously, so a profile folder can outlive its run)."""
+    tmp = tempfile.gettempdir()
+    for entry in os.listdir(tmp):
+        if entry.startswith(_TMP_PREFIXES):
+            shutil.rmtree(os.path.join(tmp, entry), ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -227,12 +242,15 @@ def qt_e2e() -> str | None:
     win.show()
 
     state = {"phase": "load", "err": None}
-    deadline = time.monotonic() + 90
-    # marker + 3 @tokens + at least one bespoke svg/section per slide
+    deadline = time.monotonic() + 150
+    # marker + 3 @tokens + at least one bespoke svg/section per slide +
+    # the __pre_reload flag (survives only in the pre-reload DOM, so its
+    # disappearance proves the unchanged-content reload really renavigated)
     probe = (
         "((document.body.textContent.match(/MARKER_V\\d+/)||[''])[0]) + '|' + "
         "document.querySelectorAll('a.ida-xref').length + '|' + "
-        "document.querySelectorAll('svg,section').length"
+        "document.querySelectorAll('svg,section').length + '|' + "
+        "(window.__pre_reload||0)"
     )
 
     check("load_returned_true", view.load(deck))
@@ -240,26 +258,61 @@ def qt_e2e() -> str | None:
     def got(result):
         # runs on ExecuteScript completion; everything guarded so a bad
         # probe result can never kill the poll loop (the repeating timer
-        # keeps ticking regardless)
+        # keeps ticking regardless). Phase transitions are one-way, so
+        # duplicate/straggler completions match no branch.
         try:
-            if not result or result.count("|") != 2:
+            if not result or result.count("|") != 3:
                 return
-            marker, xrefs_s, sections_s = result.split("|")
-            xrefs, sections = int(xrefs_s), int(sections_s)
+            marker, xrefs_s, sections_s, pre_s = result.split("|")
+            xrefs, sections, pre = int(xrefs_s), int(sections_s), int(pre_s)
             if xrefs < 3 or sections < 1:
                 return
-            if state["phase"] == "load" and marker == "MARKER_V0":
+            if state["phase"] == "load":
                 check("initial_render_xrefs", True, f"xrefs={xrefs}")
                 check("engine_label", view.engine_label == "Marp",
                       view.engine_label)
+                # phase 2: plain reload() on an UNCHANGED deck — the
+                # _run_marp `not fresh and not changed` fast path (the R
+                # shortcut). Tag the current document first; the tag not
+                # surviving proves a real renavigation happened.
+                state["phase"] = "flagging"
+
+                def _flagged(r):
+                    if r == "ok" and state["phase"] == "flagging":
+                        state["phase"] = "reload"
+                        view.reload()
+
+                view._native_eval_js_result(
+                    "window.__pre_reload = 1; 'ok'", _flagged
+                )
+            elif state["phase"] == "reload" and pre == 0:
+                # fresh document, same content generation: the fast path
+                # renavigated (a silently no-op reload keeps pre == 1)
+                check("unchanged_reload_fastpath", True)
                 state["phase"] = "save"
-                # the save cycle: rewrite the deck, then take the watcher
-                # path a real editor save takes (reload → hash capture →
-                # re-render); MARKER_V1 in the DOM proves the new render
+                # phase 3: the save cycle a real editor save takes
+                # (on_source_changed → reload → hash capture → re-render);
+                # MARKER_V1 in the DOM proves the new render
                 write_deck("MARKER_V1")
                 view.on_source_changed()
             elif state["phase"] == "save" and marker == "MARKER_V1":
                 check("save_rerendered", True, f"xrefs={xrefs}")
+                # phase 4: rapid double save — the SECOND save lands while
+                # the first render is (or may be) in flight; the latest
+                # content must win (regression for the stale-render latch,
+                # cf. the macOS harness's double-save phase)
+                state["phase"] = "doublesave_pending"
+                write_deck("MARKER_V2")
+                view.on_source_changed()
+
+                def _second_save():
+                    write_deck("MARKER_V3")
+                    view.on_source_changed()
+                    state["phase"] = "doublesave"
+
+                QTimer.singleShot(250, _second_save)
+            elif state["phase"] == "doublesave" and marker == "MARKER_V3":
+                check("double_save_latest_wins", True)
                 state["phase"] = "done"
                 app.exit(0)
         except Exception as exc:
@@ -292,19 +345,41 @@ def qt_e2e() -> str | None:
     app.exec()
     ticker.stop()
 
-    if state["err"]:
-        check("e2e", False, state["err"])
-    elif state["phase"] == "load":
-        check("initial_render_xrefs", False, "never reached")
-    elif state["phase"] == "save":
-        check("save_rerendered", False, "never reached")
+    # single exit gate: anything short of "done" is a failure, including
+    # phases added in the future — no per-phase ladder to keep in sync
+    if state["phase"] != "done":
+        check("e2e", False,
+              state["err"] or f"stopped in phase {state['phase']!r}")
 
     view.cleanup()
     check("marp_watcher_stopped", view._proc is None)
     win.close()
+
+    # give the browser's post-Close handler releases a chance to land (the
+    # pump is gone once app.exec() returns), then drop the shared
+    # environment so the browser exits and the temp profile can actually
+    # be deleted — otherwise one UDF folder leaks per run
+    import webview2_com as wv2
+
+    drain_deadline = time.monotonic() + 3
+    while time.monotonic() < drain_deadline and wv2._LIVE:
+        app.processEvents()
+        time.sleep(0.01)
+    print(f"  info: _LIVE after e2e teardown: {len(wv2._LIVE)}")
+    if webview2_view._shared_env is not None:
+        webview2_view._shared_env.release()
+        webview2_view._shared_env = None
+
     del os.environ["IDA_SLIDES_WEBVIEW2_UDF"]
     shutil.rmtree(tmp, ignore_errors=True)
-    shutil.rmtree(udf, ignore_errors=True)
+    # browser shutdown is async — retry briefly, and the startup sweep in
+    # main() reclaims anything a slow shutdown still holds this run
+    for _ in range(15):
+        shutil.rmtree(udf, ignore_errors=True)
+        if not os.path.isdir(udf):
+            break
+        app.processEvents()
+        time.sleep(0.4)
     return None
 
 
@@ -312,6 +387,8 @@ def main() -> int:
     if sys.platform != "win32":
         print("SKIP: Windows only (the macOS renderer needs IDA/PyObjC)")
         return 0
+
+    _sweep_stale_test_dirs()
 
     print("Part 1: webview2_com smoke (bare Win32, no Qt)")
     com_smoke()

@@ -17,10 +17,13 @@ Per-item status notes inline below.
 
 ## Proven statically (do not re-verify)
 
-- Every GUID and vtable slot in `webview2_com.py` matches
-  `WebView2.h` from the official Microsoft.Web.WebView2 NuGet package
-  (1.0.902.49) byte-for-byte — including `put_Bounds`(RECT by value),
-  the EventRegistrationToken ABI, and all handler Invoke shapes.
+- Every GUID and vtable slot in `webview2_com.py` **as of e72ff31**
+  matches `WebView2.h` from the official Microsoft.Web.WebView2 NuGet
+  package (1.0.902.49) byte-for-byte — including `put_Bounds`(RECT by
+  value), the EventRegistrationToken ABI, and all handler Invoke shapes.
+  (The `get_IsSuccess` slot-3 read added later in d0002a8 postdates this
+  audit; it was verified against the same header during the Windows
+  review and is exercised by the standalone harness's navigation checks.)
 - Callback objects cannot be GC'd while native code holds them (vtable
   array, ffi closures, and the Python object are all pinned).
 - IUnknown discipline (QI riid compare, AddRef on success, E_NOINTERFACE
@@ -75,10 +78,10 @@ Per-item status notes inline below.
    an existing-but-unloadable loader DLL (ARM64 host, AV block) is
    reported as 'runtime not installed'. Distinguish the OSError path.
 9. Minor: scoop glob points at `scoop\shims` (npm globals live under
-   `scoop\persist\nodejs\bin`); `webview2_com.reload()` (slot 31) is
-   dead code — delete or smoke-test it; the DLL license file records no
-   package version/arch provenance (note: extracted from
-   Microsoft.Web.WebView2, x64 only).
+   `scoop\persist\nodejs\bin`); ~~`webview2_com.reload()` (slot 31) is
+   dead code — delete or smoke-test it~~ (deleted in the 2nd-review
+   cleanup); the DLL license file records no package version/arch
+   provenance (note: extracted from Microsoft.Web.WebView2, x64 only).
 
 ## Smoke-test gaps (what `test_webview2_standalone.py` cannot catch)
 
@@ -107,8 +110,9 @@ Per-item status notes inline below.
    (finding 4's misleading error expected).
 6. Slidev deck E2E; time the deck-switch stall (finding 5, ~1.5s);
    check for orphaned node/esbuild.
-7. Korean-named and space-containing deck paths (finding 2); plugin dir
-   as NTFS junction (loader DLL must still load).
+7. ~~Korean-named and space-containing deck paths (finding 2)~~ — done,
+   REFUTED (see status header); still live: plugin dir as NTFS junction
+   (loader DLL must still load).
 8. Hover preview, embed refresh after IDB rename, lint, copy @reference.
 9. Deck-switch sibling cleanup (no PermissionError leftovers from
    Windows file locking).

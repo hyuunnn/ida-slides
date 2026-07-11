@@ -26,6 +26,13 @@ Subclass contract (all hooks may assume the Qt UI thread):
                                 a native callback frame.
     _native_focus_web()         hand keyboard focus to the native webview.
 
+Additionally, platforms must invoke self.on_load_finished (deferred) only
+for SUCCESSFUL top-level navigations — WKWebView gives this for free
+(didFinishNavigation fires on success only); WebView2 must filter on the
+NavigationCompleted IsSuccess flag. An aborted navigation (superseded by
+a newer save's navigate) reported as finished would consume _pending_hash
+and snap the deck off the current slide.
+
 There are no fallback renderers by design: without the platform webview or
 the deck's engine CLI, decks simply don't render (a status message says why).
 """
@@ -1224,7 +1231,10 @@ class DeckViewBase(QWidget):
             logger.exception("preview delivery failed")
 
     def on_load_finished(self) -> None:
-        """Called (deferred) after every top-level navigation completes."""
+        """Called (deferred) after a SUCCESSFUL top-level navigation — never
+        for failed/aborted ones (see the subclass contract in the module
+        docstring): this consumes _pending_hash, and a superseded
+        navigation's completion must not eat the follow-up load's hash."""
         if self._web is None:
             return
         try:

@@ -317,7 +317,6 @@ class WebView2(_Unknown):
     _ADD_NAVIGATION_COMPLETED = 15
     _ADD_SCRIPT_ON_CREATED = 27
     _EXECUTE_SCRIPT = 29
-    _RELOAD = 31
     _ADD_WEB_MESSAGE_RECEIVED = 34
     _ADD_NEW_WINDOW_REQUESTED = 44
 
@@ -325,9 +324,6 @@ class WebView2(_Unknown):
         hr = _com_method(self.ptr, self._NAVIGATE, _P_HR_WSTR)(self.ptr, uri)
         if hr != S_OK:
             logger.error("Navigate(%s) failed: 0x%08x", uri, hr & 0xFFFFFFFF)
-
-    def reload(self) -> None:
-        _com_method(self.ptr, self._RELOAD, _P_HR)(self.ptr)
 
     def add_script_to_execute_on_document_created(self, js: str) -> None:
         # fire-and-forget: the completion handler only logs failures
@@ -418,6 +414,11 @@ class WebView2(_Unknown):
             # ICoreWebView2NavigationCompletedEventArgs::get_IsSuccess
             # (slot 3: IUnknown 0..2)
             hr = _com_method(args, 3, _P_HR_PBOOL)(args, ctypes.byref(ok))
+            if hr != S_OK:
+                # fail OPEN (deliver success): failing closed would silently
+                # suppress on_load_finished and strand _pending_hash — but
+                # log it, or a real IsSuccess regression is invisible
+                logger.error("get_IsSuccess failed: 0x%08x", hr & 0xFFFFFFFF)
             fn(bool(ok.value) if hr == S_OK else True)
 
         return self._add_event(

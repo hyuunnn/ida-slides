@@ -108,6 +108,14 @@ chrome.webview.postMessage → WebMessageReceived); both bridges land in
   per-view. `npm` launcher shims (`marp.cmd`) are bypassed in favor of
   `node <real .js entry>` (`_spawn_spec`) so killing the QProcess reaps
   the actual renderer instead of orphaning a `marp -w` under cmd.exe.
+  NavigationCompleted must stay SUCCESS-ONLY on its way to
+  on_load_finished (the view filters on IsSuccess, matching WKWebView's
+  didFinishNavigation): an aborted navigation reported as finished
+  consumes `_pending_hash` and snaps the deck off the current slide.
+  ComCallback handlers follow standard COM in-param refcounting — every
+  create/call site must dispose() the construction reference right after
+  the API call (see the REFCOUNT MODEL note), or handlers leak in _LIVE
+  and pin closed views.
 - **Save-time batch rendering, not incremental.** Every save re-runs
   the preprocess; marp runs as a persistent `-w` watcher (one per deck,
   stopped on cleanup / file switch / engine switch) that re-renders when
@@ -228,12 +236,13 @@ chrome.webview.postMessage → WebMessageReceived); both bridges land in
 
 ## Outstanding cleanups
 
-- The Windows stack was statically audited from the mac side (vtable/GUID
-  cross-check vs the official SDK header: all match; no crash-class
-  defect). Findings (a COM handler leak, un-encoded file URLs, pnpm/yarn
-  shim orphans, a 1.5s _stop_slidev stall, watchdog races) plus the
-  ordered live-test checklist live in `win/VERIFICATION-NOTES.md` — work
-  through that on the Windows machine, smoke test in hand.
+- The Windows stack was statically audited from the mac side and
+  reconciled against the Windows-side review the same day — see the
+  status header of `win/VERIFICATION-NOTES.md` for what is FIXED /
+  REFUTED / still open (as of 2026-07-12: open items are the pnpm/yarn
+  shim-fallback orphan risk, node-missing diagnosability, and the
+  loader-DLL availability misdiagnosis). Do not re-fix items the notes
+  mark resolved.
 - High-DPI on Windows is unverified: every WebView2 check so far ran on a
   100%-scale display (2026-07). On a 125%/150% monitor confirm the deck
   is crisp and fills the pane; if not, the fix is RasterizationScale /
