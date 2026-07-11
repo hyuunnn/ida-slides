@@ -144,6 +144,13 @@ python tests\test_webview2_standalone.py
 돌리세요 — 슬롯 인덱스가 틀리면 IDA 안에서 크래시로 나타나는 대신 여기서
 깔끔한 실패로 잡힙니다. ida-slides가 열린 IDA가 떠 있어도 안전하게 실행됩니다.
 
+macOS 렌더러에도 같은 종류의 하네스가 있습니다 (부착, marp 워처, @토큰
+링크화, 저장/연속 저장 사이클, JS→Python 클릭 브리지, 정리 — IDB 불필요):
+
+```sh
+python3 tests/test_webkit_standalone.py   # 3.10+, PySide6, pyobjc 필요
+```
+
 ## 구현 노트 (IDA 9.3)
 
 - `PluginForm.FormToPySideWidget`은 `__main__`에 `QtGui`가 있어야 하며, 없으면
