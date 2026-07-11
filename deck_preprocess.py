@@ -19,6 +19,7 @@ import logging
 import re
 
 import ida_links
+import marp_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +149,6 @@ def unresolved_refs(text: str) -> list[tuple[int, str]]:
     import ida_idaapi
     import ida_segment
 
-    import marp_markdown
-
     # one IDB lookup per distinct name for the whole pass: the same token
     # tends to appear on many slides, and the trim loop below re-asks too
     ok_cache: dict[str, bool] = {}
@@ -198,8 +197,6 @@ def _expand_line(line: str) -> str:
 
 def expand_embeds(text: str) -> str:
     """Expand all embed tokens in deck text, skipping fenced code blocks."""
-    import marp_markdown
-
     out = [
         line if in_code else _expand_line(line)
         for line, in_code in marp_markdown.iter_fenced(text.splitlines())

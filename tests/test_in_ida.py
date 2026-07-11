@@ -103,30 +103,34 @@ def test_split_slides_fence_length():
     eq(len(marp_markdown.split_slides("~~~\n```\n---\n~~~\n\n---\n\nB")), 2)
 
 
+# >100 front-matter lines: the old engine-detection scanner capped its scan
+# at 100 and silently dropped everything below (shared by the two tests so
+# the fixtures can't drift apart)
+_LONG_FM = "\n".join(f"k{i}: 1" for i in range(150))
+
+
 def test_strip_front_matter():
     eq(marp_markdown.strip_front_matter("---\nmarp: true\n---\n# t\n").strip(), "# t")
     eq(marp_markdown.strip_front_matter("no front matter\n"), "no front matter\n")
+    # an indented '  ---' is not a closing delimiter (matches marp/YAML)
+    eq(marp_markdown.strip_front_matter("---\na: 1\n  ---\nb: 2\n---\nbody\n"),
+       "body\n")
 
 
 def test_front_matter_lines():
     eq(marp_markdown.front_matter_lines("---\na: 1\nb: 2\n---\nbody"),
        ["a: 1", "b: 2"])
     eq(marp_markdown.front_matter_lines("no front matter"), [])
-    # an indented '  ---' is not a closing delimiter (matches marp/YAML);
-    # strip_front_matter must agree on the same boundary
-    text = "---\na: 1\n  ---\nb: 2\n---\nbody\n"
-    eq(marp_markdown.front_matter_lines(text), ["a: 1", "  ---", "b: 2"])
-    eq(marp_markdown.strip_front_matter(text), "body\n")
-    # no length cap: a >100-line block must still be recognized (the old
-    # engine-detection scanner stopped at 100 lines and dropped overrides)
-    big = "---\n" + "\n".join(f"k{i}: 1" for i in range(150)) + "\n---\nbody"
-    eq(len(marp_markdown.front_matter_lines(big)), 150)
+    # same boundary rule as strip_front_matter: indented close ignored
+    eq(marp_markdown.front_matter_lines("---\na: 1\n  ---\nb: 2\n---\nbody\n"),
+       ["a: 1", "  ---", "b: 2"])
+    # no length cap
+    eq(len(marp_markdown.front_matter_lines(f"---\n{_LONG_FM}\n---\nbody")), 150)
 
 
 def test_detect_engine_long_front_matter():
     # the explicit override must win even past 100 front-matter lines
-    filler = "\n".join(f"k{i}: 1" for i in range(150))
-    eq(_detect(f"ida-slides-engine: slidev\n{filler}"), "slidev")
+    eq(_detect(f"ida-slides-engine: slidev\n{_LONG_FM}"), "slidev")
 
 
 def test_bespoke_restore_js():

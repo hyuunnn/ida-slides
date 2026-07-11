@@ -251,7 +251,9 @@ class SlidesForm(ida_kernwin.PluginForm):
         return issues
 
     def _on_file_changed(self, path: str) -> None:
-        if path != self._path or self._renderer is None:
+        # the watcher only ever emits its currently watched path (stale
+        # signals are dropped inside DebouncedFileWatcher)
+        if self._renderer is None:
             return
         # slidev's HMR handles saves itself; the marp path re-renders
         self._renderer.on_source_changed()

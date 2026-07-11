@@ -257,17 +257,27 @@ def _node_version_key(path: str) -> tuple[int, ...]:
     return tuple(int(n) for n in m.group(1).split(".")) if m else ()
 
 
+_tool_cache: dict[str, str] = {}
+
+
 def _find_node_tool(name: str) -> str | None:
+    # positive hits are cached (a found CLI rarely moves); misses re-probe,
+    # so installing the tool mid-session is picked up on the next save
+    cached = _tool_cache.get(name)
+    if cached:
+        return cached
     path = shutil.which(name)
+    if not path:
+        for pattern in _NODE_BIN_GLOBS:
+            hits = glob.glob(os.path.join(pattern, name))
+            if hits:
+                # newest nvm version numerically — a plain string sort
+                # ranks v9.* above v22.*
+                path = max(hits, key=_node_version_key)
+                break
     if path:
-        return path
-    for pattern in _NODE_BIN_GLOBS:
-        hits = glob.glob(os.path.join(pattern, name))
-        if hits:
-            # newest nvm version numerically — a plain string sort ranks
-            # v9.* above v22.*
-            return max(hits, key=_node_version_key)
-    return None
+        _tool_cache[name] = path
+    return path
 
 
 def find_marp() -> str | None:
@@ -276,6 +286,21 @@ def find_marp() -> str | None:
 
 def find_slidev() -> str | None:
     return _find_node_tool("slidev")
+
+
+def _read_deck(path: str) -> str | None:
+    """The one home for the deck-read idiom; None (logged) on failure."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        logger.exception("cannot read %s", path)
+        return None
+
+
+def _with_detail(msg: str, detail: str | None) -> str:
+    """Append ': <detail>' when there is detail — the one status format."""
+    return f"{msg}: {detail}" if detail else msg
 
 
 # marp aligns its log tags, so the spacing varies: "[ ERROR ]", "[  WARN ]"
@@ -302,10 +327,8 @@ def detect_engine(md_path: str, text: str | None = None) -> str:
     Pass `text` when the caller already read the deck to avoid a re-read.
     """
     if text is None:
-        try:
-            with open(md_path, encoding="utf-8", errors="replace") as f:
-                text = f.read()
-        except OSError:
+        text = _read_deck(md_path)
+        if text is None:
             return "marp"
     fm = marp_markdown.front_matter_lines(text)
     keys = {}
@@ -458,7 +481,6 @@ class DeckWebKitView(QWidget):
         self._delegate = None
         self._msg_handler = None
         self._ucc = None
-        self._marp: str | None = None
         self._proc: QProcess | None = None       # long-lived `marp -w` watcher
         self._watch_key: tuple[str, str] | None = None
         self._pending_out: str | None = None      # html we're waiting on
@@ -553,14 +575,11 @@ class DeckWebKitView(QWidget):
         # both need the text, and this runs on every save via reload()
         text: str | None = None
         if is_md:
-            try:
-                with open(path, encoding="utf-8", errors="replace") as f:
-                    text = f.read()
-            except OSError:
+            text = _read_deck(path)
+            if text is None:
                 # don't fall through: detect_engine/_prepare_md would each
                 # retry the same unreadable file and start a pipeline for a
                 # deck that can't be read
-                logger.exception("cannot read deck %s", path)
                 self._show_status(
                     f"cannot read deck: {os.path.basename(path)}"
                 )
@@ -676,7 +695,12 @@ class DeckWebKitView(QWidget):
             os.path.dirname(md_path), f".{stem}.ida-slides.{ext}"
         )
 
-    def _prepare_md(self, md_path: str, text: str | None = None) -> tuple[str, bool]:
+    def _prepare_md(
+        self,
+        md_path: str,
+        text: str | None = None,
+        force_write: bool = False,
+    ) -> tuple[str, bool]:
         """Expand embed tokens into a hidden sibling md.
 
         Returns (path, changed): the sibling's path (or the original file on
@@ -684,18 +708,21 @@ class DeckWebKitView(QWidget):
         caller can tell whether a re-render will actually happen. `changed`
         is returned per call rather than stored, so an early failure can't
         leak a stale flag into a later save. Pass `text` when the caller
-        already read the deck to avoid a re-read.
+        already read the deck to avoid a re-read. `force_write` rewrites the
+        sibling even when unchanged — used to nudge a reused `marp -w`
+        watcher into re-rendering after the output html vanished.
         """
         try:
             import deck_preprocess
 
             if text is None:
-                with open(md_path, encoding="utf-8", errors="replace") as f:
-                    text = f.read()
+                text = _read_deck(md_path)
+                if text is None:
+                    return md_path, True  # unknown → assume a render is needed
             expanded = deck_preprocess.expand_embeds(text)
         except Exception:
             logger.exception("embed preprocessing failed for %s", md_path)
-            return md_path, True  # unknown → assume a render is needed
+            return md_path, True
 
         out = self._sibling(md_path, "md")
         try:
@@ -704,7 +731,7 @@ class DeckWebKitView(QWidget):
                 with open(out, encoding="utf-8", errors="replace") as f:
                     old = f.read()
             changed = old != expanded
-            if changed:
+            if changed or force_write:
                 with open(out, "w", encoding="utf-8") as f:
                     f.write(expanded)
         except OSError:
@@ -712,21 +739,6 @@ class DeckWebKitView(QWidget):
             return md_path, True
         self._generated_md = out
         return out, changed
-
-    @staticmethod
-    def _rewrite_prepared(prepared: str) -> bool:
-        """Rewrite the prepared md with its own content, so the `marp -w`
-        watcher sees a change and re-renders even though nothing differs.
-        Returns False when the rewrite failed (no render will come)."""
-        try:
-            with open(prepared, encoding="utf-8", errors="replace") as f:
-                text = f.read()
-            with open(prepared, "w", encoding="utf-8") as f:
-                f.write(text)
-            return True
-        except OSError:
-            logger.exception("cannot rewrite prepared deck %s", prepared)
-            return False
 
     # ------------------------------------------------------------------
     # process helpers
@@ -816,9 +828,7 @@ class DeckWebKitView(QWidget):
             if self._poll_tries > 150:  # ~60s: give up
                 self._poll_timer.stop()
                 detail = self._proc_error_detail(self._slidev_proc)
-                self._show_status(
-                    "slidev did not come up" + (f": {detail}" if detail else "")
-                )
+                self._show_status(_with_detail("slidev did not come up", detail))
             return
         self._poll_timer.stop()
         self._show_status("")
@@ -840,9 +850,7 @@ class DeckWebKitView(QWidget):
         proc, self._slidev_proc = self._slidev_proc, None
         if proc is not None and exit_code != 0:
             detail = self._proc_error_detail(proc)
-            self._show_status(
-                f"slidev exited ({exit_code})" + (f": {detail}" if detail else "")
-            )
+            self._show_status(_with_detail(f"slidev exited ({exit_code})", detail))
 
     def _stop_slidev(self) -> None:
         if self._poll_timer is not None:
@@ -881,16 +889,19 @@ class DeckWebKitView(QWidget):
         node cold-start + render. It is stopped on cleanup, when another
         file is loaded, and when the deck switches to the slidev engine.
         """
-        if self._marp is None:
-            self._marp = find_marp()
-        if self._marp is None:
+        marp = find_marp()
+        if marp is None:
             self._show_status(
                 "marp CLI not found — install with: npm i -g @marp-team/marp-cli"
             )
             return
 
         out = self._sibling(md_path, "html")
-        prepared, changed = self._prepare_md(md_path, text)
+        # a vanished output with unchanged input would never re-render on a
+        # reused watcher (it only reacts to the prepared md being rewritten)
+        # — force the rewrite so a render is always coming in that case
+        force = not os.path.isfile(out)
+        prepared, changed = self._prepare_md(md_path, text, force_write=force)
 
         # start (or reuse) the watcher; `marp -w` logs "=> <out>" to stderr
         # each time it finishes a render, which is our completion signal —
@@ -900,11 +911,11 @@ class DeckWebKitView(QWidget):
         if fresh:
             self._stop_marp()
             proc = QProcess(self)
-            proc.setProgram(self._marp)
+            proc.setProgram(marp)
             proc.setArguments(["-w", prepared, "-o", out, "--html"])
             # marp blocks reading stdin when it is a pipe
             proc.setStandardInputFile(QProcess.nullDevice())
-            proc.setProcessEnvironment(self._tool_env(self._marp))
+            proc.setProcessEnvironment(self._tool_env(marp))
             proc.finished.connect(self._on_marp_exit)
             proc.errorOccurred.connect(self._on_marp_error)
             proc.readyReadStandardError.connect(self._drain_marp_stderr)
@@ -918,20 +929,16 @@ class DeckWebKitView(QWidget):
         # not while a render is in flight (_pending_out set): loading the
         # pre-save html would clear _pending_out and make the imminent
         # "=> out" line be ignored, leaving the stale render on screen.
-        if not fresh and not changed and self._pending_out is None:
-            if os.path.isfile(out):
-                self._finish_render(out, restore_hash)
-                return
-            # the output vanished (deleted externally) and the unchanged
-            # input won't be rewritten, so the reused watcher would never
-            # re-render — rewrite the prepared md to trigger one. If even
-            # that fails, don't arm a wait no render can satisfy (later
-            # unchanged saves skip this branch via the in-flight guard)
-            if not self._rewrite_prepared(prepared):
-                self._show_status(
-                    "cannot rewrite prepared deck — see Output window"
-                )
-                return
+        # (The vanished-output case falls through: force_write above
+        # rewrote the prepared md, so a render IS coming.)
+        if (
+            not fresh
+            and not changed
+            and self._pending_out is None
+            and os.path.isfile(out)
+        ):
+            self._finish_render(out, restore_hash)
+            return
         self._pending_out = out
         self._pending_restore = restore_hash
         self._arm_render_timeout()
@@ -966,8 +973,9 @@ class DeckWebKitView(QWidget):
             # the "=> out" line arrived but the file is gone (deleted, or a
             # write that failed after logging); loading it would blank the
             # view silently — keep waiting for a good render instead
-            detail = f": {self._last_marp_err}" if self._last_marp_err else ""
-            self._show_status(f"marp output missing{detail}")
+            self._show_status(
+                _with_detail("marp output missing", self._last_marp_err)
+            )
             return
         self._clear_render_timeout()
         self._pending_out = None
@@ -1023,8 +1031,9 @@ class DeckWebKitView(QWidget):
         self._proc = None
         self._watch_key = None
         self._abandon_pending_render()
-        detail = f": {self._last_marp_err}" if self._last_marp_err else ""
-        self._show_status(f"marp watcher exited (code {code}){detail}")
+        self._show_status(
+            _with_detail(f"marp watcher exited (code {code})", self._last_marp_err)
+        )
 
     def _drain_marp_stderr(self) -> None:
         if self._proc is None:
@@ -1059,10 +1068,10 @@ class DeckWebKitView(QWidget):
                     self._abandon_pending_render()
                     self._show_status(line)
 
-    def _remove_generated(self) -> None:
+    def _remove_generated(self, keep: tuple[str, ...] = ()) -> None:
         for attr in ("_generated", "_generated_md"):
             path = getattr(self, attr)
-            if path:
+            if path and path not in keep:
                 try:
                     os.remove(path)
                 except OSError:
@@ -1078,12 +1087,10 @@ class DeckWebKitView(QWidget):
         about to be loaded would blank the view.
         """
         keep = (path, self._sibling(path, "md"), self._sibling(path, "html"))
-        stale = [
-            (attr, p)
+        if not any(
+            (p := getattr(self, attr)) and p not in keep
             for attr in ("_generated", "_generated_md")
-            if (p := getattr(self, attr)) and p not in keep
-        ]
-        if not stale:
+        ):
             return
         # stale files mean a deck switch, so the old pipelines can never be
         # reused (_watch_key / _slidev_md differ) — stop them BEFORE the
@@ -1092,12 +1099,7 @@ class DeckWebKitView(QWidget):
         # event loop), flashing stale errors over the new deck
         self._stop_marp()
         self._stop_slidev()
-        for attr, p in stale:
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-            setattr(self, attr, None)
+        self._remove_generated(keep)
 
     # ------------------------------------------------------------------
     # WKWebView loading
