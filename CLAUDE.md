@@ -184,7 +184,12 @@ chrome.webview.postMessage → WebMessageReceived); both bridges land in
   `~/.idapro/plugins/ida-slides`; Windows: directly at
   `%APPDATA%\Hex-Rays\IDA Pro\plugins\ida-slides`); a running IDA loads
   this working tree directly.
-- The Windows renderer is testable OUTSIDE IDA:
+- Both renderers are testable OUTSIDE IDA. macOS:
+  `python3 tests/test_webkit_standalone.py` (needs 3.10+, PySide6, pyobjc;
+  E2E: attach, marp watcher, linkify, save + rapid-save cycles, the
+  JS→Python click bridge via a monkeypatched do_jump, cleanup — no IDB;
+  no COM-style Part 1 on purpose: PyObjC crash safety is a structural
+  rule, not a probeable surface). Windows:
   `python tests\test_webview2_standalone.py` (part 1: COM layer in a bare
   Win32 window; part 2: DeckWebView2View + real marp pipeline under Qt).
   Run it BEFORE touching vtable/COM code — a wrong slot index fails there

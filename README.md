@@ -147,6 +147,14 @@ Run this before touching any vtable/COM code in `webview2_com.py` — a
 wrong slot index shows up here as a clean failure instead of a crash
 inside IDA. It is safe to run while an IDA with ida-slides is open.
 
+The macOS renderer has the same kind of harness (attach, marp watcher,
+@token linkify, save/rapid-save cycles, the JS→Python click bridge,
+cleanup — no IDB needed):
+
+```sh
+python3 tests/test_webkit_standalone.py   # needs 3.10+, PySide6, pyobjc
+```
+
 ## Implementation notes (IDA 9.3)
 
 - `PluginForm.FormToPySideWidget` requires `QtGui` in `__main__` and fails
