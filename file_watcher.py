@@ -42,10 +42,14 @@ class DebouncedFileWatcher(QObject):
         self._timer.stop()
 
     def _on_file_changed(self, path: str) -> None:
+        # Ignore signals for a previously watched file: one queued before a
+        # watch() swap can arrive late and must not fire a phantom changed()
+        # for the new path.
+        if self._path is None or self._path != path:
+            return
         # If the file was atomically replaced, the watcher dropped it.
         # Schedule a short follow-up that re-adds the path before debounced emit.
-        if self._path is not None and self._path == path:
-            self._schedule_rearm(0)
+        self._schedule_rearm(0)
         self._timer.start(_DEBOUNCE_MS)
 
     def _schedule_rearm(self, attempt: int) -> None:
