@@ -7,6 +7,14 @@ conformance (mac implementation as reference), and Windows platform
 branches. **Verdict: no crash-class defect found; the findings below are
 leaks, diagnosability gaps, and install-layout edge cases.**
 
+**Windows-side reconciliation (2026-07-12, same day):** an independent
+multi-agent review on the Windows machine converged on findings 1, 5, 6
+and 7 and fixed them in d0002a8 (verified live: `com_handlers_drained`
+regression check added to the smoke test); finding 2 was tested live and
+REFUTED (Korean+space deck path renders with live links under the current
+PrettyDecoded URL — WebView2's Navigate tolerates it). Open: 3, 4, 8, 9.
+Per-item status notes inline below.
+
 ## Proven statically (do not re-verify)
 
 - Every GUID and vtable slot in `webview2_com.py` matches
@@ -25,7 +33,7 @@ leaks, diagnosability gaps, and install-layout edge cases.**
 
 ## Findings (fix on the Windows machine, smoke test in hand)
 
-1. **Handler refcount floor — unbounded leak** (`webview2_com.py:137`).
+1. **[FIXED d0002a8]** **Handler refcount floor — unbounded leak** (`webview2_com.py:137`).
    ComCallback keeps its construction reference; WebView2 pairs its own
    AddRef/Release (standard `[in]` semantics, cf. WRL `Callback<>`), so
    counts bottom out at 1 and nothing ever leaves `_LIVE`. Every
@@ -34,7 +42,7 @@ leaks, diagnosability gaps, and install-layout edge cases.**
    call (one-shot completed handlers can release in `_invoke`).
    *Refcount changes are crash-sensitive — fix with
    `test_webview2_standalone.py` runs between edits.*
-2. **File URLs not percent-encoded** (`webview2_view.py:275`).
+2. **[REFUTED — live test]** **File URLs not percent-encoded** (`webview2_view.py:275`).
    `QUrl.fromLocalFile(...).toString()` default emits raw spaces/Korean;
    use `toString(QUrl.ComponentFormattingOption.FullyEncoded)`. A deck
    under a Korean/space path may navigate to a blank pane silently.
@@ -50,16 +58,17 @@ leaks, diagnosability gaps, and install-layout edge cases.**
    lives in `%ProgramFiles%\nodejs`; with node off PATH both spawn
    strategies fail as a bare 'marp CLI failed to start'. Probe
    `%ProgramFiles%\nodejs` for node and say WHICH piece is missing.
-5. **`_stop_slidev` freezes the UI ~1.5s on Windows**
+5. **[FIXED d0002a8]** **`_stop_slidev` freezes the UI ~1.5s on Windows**
    (`deck_view.py:919`). `terminate()` posts WM_CLOSE, which a console
    node ignores, so `waitForFinished(1500)` always times out before
    kill(). On `_IS_WIN`, skip terminate and kill directly (verify vite's
    esbuild child exits when its service pipe closes).
-6. **Late attach after declared failure** (`webview2_view.py:186`).
+6. **[FIXED d0002a8]** **Late attach after declared failure** (`webview2_view.py:186`).
    `_attach_failed` doesn't bump `_attach_gen`, so a stalled attempt
    completing after the watchdog gave up still attaches, leaving a live
    view with `attach_failed` latched (next Open rebuilds it needlessly).
-7. **Stalled/raced environments never released**
+7. **[FIXED d0002a8 — retry path; the `:200` concurrent-overwrite case
+   is moot while views are a singleton]** **Stalled/raced environments never released**
    (`webview2_view.py:181` retry path; `:200` concurrent-create
    overwrite) — browser processes + UDF lock linger for the session.
 8. **`availability_error` misdiagnosis** (`webview2_view.py:87`):
