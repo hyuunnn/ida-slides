@@ -113,7 +113,8 @@ def _jump_to_pseudocode_line(ea: int, line: int, name: str) -> bool:
             ida_kernwin.activate_widget(prev, True)
         nlines = vu.cfunc.get_pseudocode().size()
         lnnum = min(max(line, 1), nlines) - 1
-        ct = vu.ct
+        title = ida_kernwin.get_widget_title(vu.ct)
+        entry = vu.cfunc.entry_ea
 
         from PySide6.QtCore import QTimer
 
@@ -122,6 +123,17 @@ def _jump_to_pseudocode_line(ea: int, line: int, name: str) -> bool:
             # jump, which can land after ours and clobber it. We re-apply and
             # verify a few times until the caret sticks (or give up quietly).
             try:
+                # re-resolve the viewer on every attempt instead of reusing
+                # the captured TWidget: the user can close (or Hex-Rays can
+                # replace) the tab between retries, and touching the freed
+                # widget can hard-crash IDA — not a catchable exception
+                w = ida_kernwin.find_widget(title)
+                vu2 = ida_hexrays.get_widget_vdui(w) if w is not None else None
+                if vu2 is None or vu2.cfunc is None:
+                    return  # view is gone — give up quietly
+                if vu2.cfunc.entry_ea != entry:
+                    return  # view shows another function now
+                ct = vu2.ct
                 # raise the pseudocode tab but keep keyboard focus on the
                 # deck (take_focus=False); the retry loop below would
                 # otherwise re-steal focus on every attempt

@@ -6,12 +6,27 @@ current location on the clipboard.
 """
 
 import logging
+import re
 
 import ida_idaapi
 import ida_kernwin
 import ida_name
 
+import ida_links
+
 logger = logging.getLogger(__name__)
+
+# a copied token is only useful if the deck-side regex can re-parse it;
+# names that don't round-trip (ObjC `-[Class sel:]`, demangled C++ with
+# spaces/parens, …) fall back to the raw address form
+_NAME_OK = re.compile(rf"(?:{ida_links._NAME_PATTERN})\Z")
+
+
+def _token_name(ea: int) -> str:
+    name = ida_name.get_name(ea)
+    if name and _NAME_OK.match(name):
+        return name
+    return f"0x{ea:X}"
 
 ACTION_NAME = "ida_slides:copy_ref"
 ACTION_LABEL = "Copy @reference"
@@ -34,7 +49,9 @@ def _pseudocode_selection_lines(widget) -> tuple[int, int] | None:
             return None
         n1 = ida_kernwin.place_t_as_simpleline_place_t(p1.place(widget)).n
         n2 = ida_kernwin.place_t_as_simpleline_place_t(p2.place(widget)).n
-        lo, hi = sorted((n1, n2))
+        (lo, _lo_x), (hi, hi_x) = sorted(((n1, p1.x), (n2, p2.x)))
+        if hi > lo and hi_x == 0:
+            hi -= 1  # drag released at column 0 — that line isn't selected
         if hi <= lo:
             return None
         return lo + 1, hi + 1
@@ -55,15 +72,14 @@ def build_reference(widget, cur_ea: int) -> str | None:
 
             vu = ida_hexrays.get_widget_vdui(widget)
             if vu is not None and vu.cfunc is not None:
-                name = ida_name.get_name(vu.cfunc.entry_ea)
-                if name:
-                    span = _pseudocode_selection_lines(widget)
-                    if span is not None:
-                        return f"@{name}[{span[0]}:{span[1]}]"
-                    lnnum = vu.cpos.lnnum
-                    if lnnum > 0:
-                        return f"@{name}:{lnnum + 1}"
-                    return f"@{name}"
+                name = _token_name(vu.cfunc.entry_ea)
+                span = _pseudocode_selection_lines(widget)
+                if span is not None:
+                    return f"@{name}[{span[0]}:{span[1]}]"
+                lnnum = vu.cpos.lnnum
+                if lnnum > 0:
+                    return f"@{name}:{lnnum + 1}"
+                return f"@{name}"
         except Exception:
             logger.exception("pseudocode reference failed")
         return None
@@ -73,10 +89,7 @@ def build_reference(widget, cur_ea: int) -> str | None:
     ea = sel_ea if sel_ea != ida_idaapi.BADADDR else cur_ea
     if ea == ida_idaapi.BADADDR:
         return None
-    name = ida_name.get_name(ea)
-    if name:
-        return f"@{name}"
-    return f"@0x{ea:X}"
+    return f"@{_token_name(ea)}"
 
 
 def _disasm_selection_start(widget) -> int:

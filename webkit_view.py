@@ -566,8 +566,15 @@ class MarpWebKitView(QWidget):
     def cleanup(self) -> None:
         """Detach the native view; call before the Qt widget goes away."""
         if self._proc is not None:
-            self._proc.kill()
-            self._proc = None
+            # the view is going away — a queued finished must not fire
+            # into handlers that touch the dead widget
+            proc, self._proc = self._proc, None
+            try:
+                proc.finished.disconnect()
+                proc.errorOccurred.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            proc.kill()
         self._stop_slidev()
         if self._ucc is not None:
             try:
@@ -764,8 +771,17 @@ class MarpWebKitView(QWidget):
         prepared = self._prepare_md(md_path)
 
         if self._proc is not None:
-            self._proc.kill()
-            self._proc = None
+            # disconnect before killing: the dead process's queued
+            # finished/errorOccurred would otherwise fire into the shared
+            # handlers and clobber self._proc, which points at the NEW
+            # process by then (same defense as _stop_slidev)
+            proc, self._proc = self._proc, None
+            try:
+                proc.finished.disconnect()
+                proc.errorOccurred.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            proc.kill()
 
         self._show_status("marp rendering…")
         proc = QProcess(self)
