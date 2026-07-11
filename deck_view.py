@@ -62,6 +62,8 @@ if _IS_WIN:
         os.path.expandvars(r"%ProgramFiles%\nodejs"),
         os.path.expandvars(r"%LOCALAPPDATA%\pnpm"),
         os.path.expandvars(r"%USERPROFILE%\scoop\shims"),
+        # scoop puts npm globals under persist, not shims
+        os.path.expandvars(r"%USERPROFILE%\scoop\persist\nodejs\bin"),
         os.path.expandvars(r"%APPDATA%\nvm\v*"),  # nvm-windows version dirs
     ]
     # shutil.which honors PATHEXT; the globs need explicit launcher suffixes

@@ -120,6 +120,12 @@ def com_smoke() -> None:
         state["ctrl"] = ctrl
         ctrl.put_bounds(0, 0, 800, 560)
         ctrl.put_is_visible(True)
+        # exercise the two slots whose first-ever call would otherwise
+        # happen live inside IDA (@token focus restore / dock drag) — a
+        # wrong slot index fails HERE instead of crashing IDA
+        ctrl.move_focus()
+        ctrl.notify_parent_window_position_changed()
+        check("focus_and_notify_slots", True)
         web = ctrl.get_core_webview2()
         if not check("get_core_webview2", web is not None):
             return

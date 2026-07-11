@@ -1,0 +1,12 @@
+WebView2Loader.dll
+  Source:  Microsoft.Web.WebView2 NuGet package, version 1.0.4078.44
+           (https://www.nuget.org/packages/Microsoft.Web.WebView2)
+  Path:    runtimes/win-x64/native/WebView2Loader.dll
+  Arch:    x64 only (an ARM64 IDA/Python host would need the win-arm64
+           loader from the same package)
+  License: WebView2Loader-LICENSE.txt (BSD-style, from the package root)
+
+When updating: download the .nupkg (it is a zip), extract the same path,
+replace the DLL, and update the version recorded here. The vtable slot
+indices in webview2_com.py are frozen ABI and do not depend on the loader
+version.

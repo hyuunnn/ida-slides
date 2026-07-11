@@ -14,8 +14,9 @@ regression check added to the smoke test); finding 2 was tested live and
 REFUTED (Korean+space deck path renders with live links under the current
 PrettyDecoded URL — WebView2's Navigate tolerates it). Findings 3 and 4
 were fixed in the follow-up (tree-kill + node probing; orphan reproduced
-and fix verified live). Open: 8, plus 9's scoop-glob and license-provenance
-nits. Per-item status notes inline below.
+and fix verified live), then 8 and 9 in the final sweep. **All findings
+are now closed.** Remaining live-only items: high-DPI (needs a scaled
+monitor) and the NTFS-junction install check.
 
 ## Proven statically (do not re-verify)
 
@@ -83,22 +84,23 @@ nits. Per-item status notes inline below.
    is moot while views are a singleton]** **Stalled/raced environments never released**
    (`webview2_view.py:181` retry path; `:200` concurrent-create
    overwrite) — browser processes + UDF lock linger for the session.
-8. **`availability_error` misdiagnosis** (`webview2_view.py:87`):
+8. **[FIXED]** **`availability_error` misdiagnosis** (`webview2_view.py:87`):
    an existing-but-unloadable loader DLL (ARM64 host, AV block) is
    reported as 'runtime not installed'. Distinguish the OSError path.
-9. Minor: scoop glob points at `scoop\shims` (npm globals live under
-   `scoop\persist\nodejs\bin`); ~~`webview2_com.reload()` (slot 31) is
-   dead code — delete or smoke-test it~~ (deleted in the 2nd-review
-   cleanup); the DLL license file records no package version/arch
-   provenance (note: extracted from Microsoft.Web.WebView2, x64 only).
+   *Fix: the loader is loaded explicitly first; an OSError produces its
+   own message (x64-only loader, AV block) pointing at PROVENANCE.txt.*
+9. **[FIXED]** Minor: ~~scoop glob points at `scoop\shims`~~ (persist
+   path added); ~~`webview2_com.reload()` (slot 31) is dead code~~
+   (deleted in the 2nd-review cleanup); ~~no package version/arch
+   provenance~~ (win/PROVENANCE.txt: Microsoft.Web.WebView2 1.0.4078.44,
+   runtimes/win-x64/native).
 
 ## Smoke-test gaps (what `test_webview2_standalone.py` cannot catch)
 
-- `MoveFocus` (slot 12) and `NotifyParentWindowPositionChanged`
-  (slot 23) are never invoked by the smoke — their first-ever calls are
-  a live @token click's focus restore and a live dock drag. Slot indices
-  are verified against the header, but these two calls happen first in
-  IDA.
+- ~~`MoveFocus` (slot 12) and `NotifyParentWindowPositionChanged`
+  (slot 23) are never invoked by the smoke~~ — closed: part 1 now calls
+  both after controller creation, so a wrong slot fails in the harness
+  instead of first firing inside IDA.
 - Shared-environment reuse (close form → reopen), the whole
   watchdog/retry/per-pid-UDF machinery, the slidev pipeline, the
   QFileSystemWatcher save loop, and every IDA-dependent flow.

@@ -84,6 +84,18 @@ def availability_error() -> str | None:
             "directory.\n\nRe-install the plugin, or copy the x64 loader "
             "from the Microsoft.Web.WebView2 NuGet package."
         )
+    try:
+        # distinguish "the DLL itself would not load" (ARM64 host running
+        # an x64 loader, antivirus block) from "no runtime installed" —
+        # the runtime-install advice is useless for the former
+        webview2_com._load_loader(_LOADER_PATH)
+    except OSError as exc:
+        return (
+            "ida-slides: win/WebView2Loader.dll exists but could not be "
+            f"loaded ({exc}).\n\nThe shipped loader is x64-only (see "
+            "win/PROVENANCE.txt); an ARM64 IDA needs the win-arm64 loader, "
+            "and antivirus software can also block DLL loads."
+        )
     if webview2_com.runtime_version(_LOADER_PATH) is None:
         return (
             "ida-slides: the WebView2 Runtime is not installed.\n\n"
