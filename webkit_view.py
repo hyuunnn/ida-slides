@@ -550,6 +550,7 @@ class MarpWebKitView(QWidget):
         # clear any stale error banner (e.g. "marp watcher exited") so it
         # doesn't linger over a freshly loaded deck
         self._show_status("")
+        self._discard_stale_generated(path)
         if engine == "slidev":
             self._stop_marp()
             self._run_slidev(path)
@@ -681,6 +682,18 @@ class MarpWebKitView(QWidget):
         self._generated_md = out
         return out, changed
 
+    @staticmethod
+    def _rewrite_prepared(prepared: str) -> None:
+        """Rewrite the prepared md with its own content, so the `marp -w`
+        watcher sees a change and re-renders even though nothing differs."""
+        try:
+            with open(prepared, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            with open(prepared, "w", encoding="utf-8") as f:
+                f.write(text)
+        except OSError:
+            logger.exception("cannot rewrite prepared deck %s", prepared)
+
     # ------------------------------------------------------------------
     # process helpers
     # ------------------------------------------------------------------
@@ -803,8 +816,12 @@ class MarpWebKitView(QWidget):
             self._poll_timer = None
         if self._slidev_proc is not None:
             proc, self._slidev_proc = self._slidev_proc, None
+            # disconnect BOTH handlers before killing: terminate()/kill()
+            # emits errorOccurred(Crashed), which would fire the "slidev
+            # failed to start" lambda over a freshly loaded deck
             try:
-                proc.finished.disconnect(self._on_slidev_exit)
+                proc.finished.disconnect()
+                proc.errorOccurred.disconnect()
             except (RuntimeError, TypeError):
                 pass
             proc.terminate()
@@ -858,13 +875,21 @@ class MarpWebKitView(QWidget):
 
         # await the next "=> out" render-complete line before loading. A
         # reused watcher whose input didn't change never re-renders, so it
-        # would never log again — load what's already there directly.
-        if not fresh and not changed and os.path.isfile(out):
-            self._finish_render(out, restore_hash)
-        else:
-            self._pending_out = out
-            self._pending_restore = restore_hash
-            self._arm_render_timeout()
+        # would never log again — load what's already there directly. But
+        # not while a render is in flight (_pending_out set): loading the
+        # pre-save html would clear _pending_out and make the imminent
+        # "=> out" line be ignored, leaving the stale render on screen.
+        if not fresh and not changed and self._pending_out is None:
+            if os.path.isfile(out):
+                self._finish_render(out, restore_hash)
+                return
+            # the output vanished (deleted externally) and the unchanged
+            # input won't be rewritten, so the reused watcher would never
+            # re-render — rewrite the prepared md to trigger one
+            self._rewrite_prepared(prepared)
+        self._pending_out = out
+        self._pending_restore = restore_hash
+        self._arm_render_timeout()
 
     def _clear_render_timeout(self) -> None:
         if self._render_timeout is not None:
@@ -904,8 +929,9 @@ class MarpWebKitView(QWidget):
         self._pending_restore = None
         self._last_marp_err = None  # a good render clears stale error detail
         self._show_status("")
-        if self._generated and self._generated != out:
-            self._remove_generated()
+        # deck-switch cleanup happens in load() (_discard_stale_generated),
+        # never here: at render time _generated_md is the live watcher's
+        # input, and removing it would kill the watch under the new deck
         self._generated = out
         # set the restore hash immediately before starting THIS navigation,
         # so no earlier in-flight load's didFinishNavigation can consume it
@@ -944,10 +970,17 @@ class MarpWebKitView(QWidget):
 
     def _on_marp_exit(self, code: int, _status) -> None:
         # the watcher should outlive every save; if it dies, say so and
-        # let the next save/reload start a fresh one
+        # let the next save/reload start a fresh one. Drain first: a render
+        # that completed just before death still gets loaded.
         self._drain_marp_stderr()
         self._proc = None
         self._watch_key = None
+        # a dead watcher means no render is coming — drop the pending wait
+        # so the timeout doesn't later overwrite this message with
+        # "taking longer" (same rule as _on_marp_error)
+        self._clear_render_timeout()
+        self._pending_out = None
+        self._pending_restore = None
         detail = f": {self._last_marp_err}" if self._last_marp_err else ""
         self._show_status(f"marp watcher exited (code {code}){detail}")
 
@@ -981,6 +1014,24 @@ class MarpWebKitView(QWidget):
             if path:
                 try:
                     os.remove(path)
+                except OSError:
+                    pass
+                setattr(self, attr, None)
+
+    def _discard_stale_generated(self, path: str) -> None:
+        """Drop generated siblings left over from a previously loaded deck.
+
+        Runs at load() time, before the new deck's pipeline starts: the old
+        watcher is about to be replaced, so its files can go, while the new
+        deck's own siblings (`keep`) must survive — they are (or become)
+        the input of the live watcher.
+        """
+        keep = (self._sibling(path, "md"), self._sibling(path, "html"))
+        for attr in ("_generated", "_generated_md"):
+            p = getattr(self, attr)
+            if p and p not in keep:
+                try:
+                    os.remove(p)
                 except OSError:
                     pass
                 setattr(self, attr, None)
