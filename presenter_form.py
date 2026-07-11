@@ -240,7 +240,9 @@ class SlidesForm(ida_kernwin.PluginForm):
         try:
             import deck_preprocess
 
-            with open(self._path, encoding="utf-8", errors="replace") as fh:
+            # utf-8-sig: a BOM would otherwise survive into the text and
+            # defeat the front-matter scan (lint slide numbering)
+            with open(self._path, encoding="utf-8-sig", errors="replace") as fh:
                 issues = deck_preprocess.unresolved_refs(fh.read())
         except Exception:
             logger.exception("reference lint failed for %s", self._path)

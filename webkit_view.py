@@ -289,9 +289,15 @@ def find_slidev() -> str | None:
 
 
 def _read_deck(path: str) -> str | None:
-    """The one home for the deck-read idiom; None (logged) on failure."""
+    """The one home for the deck-read idiom; None (logged) on failure.
+
+    utf-8-sig: a BOM (Windows editors) would otherwise survive into the
+    text and silently defeat the front-matter scan — engine overrides
+    ignored, lint slide numbers shifted — while marp itself handles BOM
+    decks fine, leaving no visible clue.
+    """
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
             return f.read()
     except OSError:
         logger.exception("cannot read %s", path)

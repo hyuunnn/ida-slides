@@ -133,6 +133,17 @@ def test_detect_engine_long_front_matter():
     eq(_detect(f"ida-slides-engine: slidev\n{_LONG_FM}"), "slidev")
 
 
+def test_detect_engine_bom():
+    # a UTF-8 BOM must not defeat the front-matter scan (utf-8-sig read)
+    fd, path = tempfile.mkstemp(suffix=".md")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write("﻿---\nida-slides-engine: slidev\n---\n\n# t\n".encode())
+        eq(webkit_view.detect_engine(path), "slidev")
+    finally:
+        os.unlink(path)
+
+
 def test_bespoke_restore_js():
     js = marp_markdown.bespoke_restore_js("#/3")
     truthy('"#/3"' in js, js)          # json-encoded, not repr
@@ -285,6 +296,9 @@ def test_resolve_ea():
     truthy(ida_links.is_resolvable(name), name)
     truthy(not ida_links.is_resolvable("no_such_name_zzz_123"), "bogus name")
     eq(ida_links.resolve_ea("no_such_name_zzz_123"), ida_idaapi.BADADDR)
+    # hex beyond ea_t must resolve to BADADDR, not overflow getseg later
+    # (one such typo token used to abort the whole lint pass)
+    eq(ida_links.resolve_ea("0x1ffffffffffffffff"), ida_idaapi.BADADDR)
 
 
 def test_decompile_lines():
@@ -328,6 +342,7 @@ ALL = [
     ("strip_front_matter", test_strip_front_matter),
     ("front_matter_lines", test_front_matter_lines),
     ("detect_engine_long_front_matter", test_detect_engine_long_front_matter),
+    ("detect_engine_bom", test_detect_engine_bom),
     ("bespoke_restore_js", test_bespoke_restore_js),
     ("yaml_scalar", test_yaml_scalar),
     ("node_version_key", test_node_version_key),

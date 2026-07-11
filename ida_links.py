@@ -28,9 +28,13 @@ def resolve_ea(name: str) -> int:
 
     if name.lower().startswith("0x"):
         try:
-            return int(name, 16)
+            ea = int(name, 16)
         except ValueError:
             return ida_idaapi.BADADDR
+        # a value beyond ea_t overflows SWIG converters downstream
+        # (getseg etc.), which would blow up a whole lint pass — treat
+        # out-of-range hex as unresolvable instead
+        return ea if ea < ida_idaapi.BADADDR else ida_idaapi.BADADDR
     return ida_name.get_name_ea(ida_idaapi.BADADDR, name)
 
 
