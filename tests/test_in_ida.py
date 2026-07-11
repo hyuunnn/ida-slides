@@ -143,16 +143,18 @@ def _detect(front_matter):
         os.unlink(path)
 
 
-def test_detect_engine():
+def test_detect_engine_marp():
     eq(_detect("marp: true"), "marp")
     eq(_detect("title: hello"), "marp")                 # default
     eq(_detect("ida-slides-engine: marp\ntransition: x"), "marp")
+
+
+def test_detect_engine_slidev():
     # marp:false should defer to slidev — only assertable when slidev exists
-    if webkit_view.find_slidev():
-        eq(_detect("marp: false # opt out\ntransition: slide"), "slidev")
-        eq(_detect("marp: false\ntransition: slide"), "slidev")
-    else:
+    if not webkit_view.find_slidev():
         raise _Skip("slidev CLI not installed")
+    eq(_detect("marp: false # opt out\ntransition: slide"), "slidev")
+    eq(_detect("marp: false\ntransition: slide"), "slidev")
 
 
 def test_embed_regex_and_fences():
@@ -250,7 +252,8 @@ ALL = [
     ("strip_front_matter", test_strip_front_matter),
     ("bespoke_restore_js", test_bespoke_restore_js),
     ("yaml_scalar", test_yaml_scalar),
-    ("detect_engine", test_detect_engine),
+    ("detect_engine_marp", test_detect_engine_marp),
+    ("detect_engine_slidev", test_detect_engine_slidev),
     ("embed_regex_and_fences", test_embed_regex_and_fences),
     ("copy_ref_name_validation", test_copy_ref_name_validation),
     ("resolve_ea", test_resolve_ea),
