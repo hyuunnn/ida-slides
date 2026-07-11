@@ -83,12 +83,17 @@ to Python via a WKScriptMessageHandler.
   routing uses WKUserScript + postMessage instead of navigation
   delegates. Keep it that way.
 - **Save-time batch rendering, not incremental.** Every save re-runs
-  preprocess + marp. Tradeoff accepted for pixel-perfect themes; costs
-  are blunted by the 200ms debounce, Hex-Rays' internal cfunc cache,
-  slice-only tag_remove in `decompile_lines`, and an output-diff guard.
-  The diff guard sits intentionally AFTER `expand_embeds`: a same-content
-  save is the documented gesture for refreshing embeds after an IDB
-  rename, so identical input must not skip expansion.
+  the preprocess; marp runs as a persistent `-w` watcher (one per deck,
+  stopped on cleanup / file switch / engine switch) that re-renders when
+  the prepared md is rewritten, and the view reloads when the output
+  html's mtime advances. Tradeoff accepted for pixel-perfect themes;
+  costs are blunted by the 200ms debounce, Hex-Rays' internal cfunc
+  cache, slice-only tag_remove in `decompile_lines`, and an output-diff
+  guard. The diff guard sits intentionally AFTER `expand_embeds`: a
+  same-content save is the documented gesture for refreshing embeds
+  after an IDB rename, so identical input must not skip expansion.
+  Status label policy: error messages only — no transient "rendering…"
+  text (the label popping in reflows the pane on every save).
 - **Focus invariants.** Verified mechanics, easy to regress:
   - `jumpto(ea, -1, 0)` (no UIJMP_ACTIVATE) repositions without taking
     focus but does NOT raise a buried tab; `activate_widget(w, False)`
