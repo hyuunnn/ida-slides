@@ -14,21 +14,16 @@ Marp slides inside an IDA Pro tab.
 
 - No more Alt-Tab between IDA and Keynote during a live demo
 - Slides dock next to Pseudocode / IMPORTS / Hex View
-- `marp -w` rewrites the HTML on save → IDA reloads in ~200ms
+- Edit the deck in your editor; ida-slides re-renders and reloads on save
 
 ---
 
 ## How to use
 
 1. Author Markdown with the usual Marp directives
-2. In IDA: `Ctrl+Shift+M` → pick `deck.md` (built-in slide viewer)
-3. Or, with QtWebEngine installed, render full Marp themes:
-
-   ```sh
-   marp -w deck.md -o deck.html
-   ```
-
-   and open `deck.html` instead
+2. In IDA: `Ctrl+Shift+M` → pick this `.md`
+3. On macOS it renders with the real marp CLI in an embedded WKWebView;
+   just save in your editor and the docked slide reloads in place
 
 ---
 
@@ -53,7 +48,8 @@ into the slide — refreshed from the IDB every time you save:
 
 @main[1:8]
 
-Use `@name[7]` for a single line or `@name[]` for the whole function.
+Use `@name[7]` for a single line, `@name[]` for the whole function, or
+`@name[1:8@5]` to mark line 5 with `►`.
 
 ---
 
