@@ -85,9 +85,7 @@ first and it captures the range as an embed token `@name[lo:hi]`; otherwise
 it copies `@name:line` (pseudocode), `@name`, or `@0xADDR` for unnamed bytes.
 
 Jumps never take keyboard focus away from the deck, so you keep driving
-slides with the arrow keys without clicking back in. A `:N` jump also
-flashes the landed pseudocode line amber for a moment — the audience sees
-where the view went, not just a caret they can't spot on a projector.
+slides with the arrow keys without clicking back in.
 
 ## Writing decks
 
