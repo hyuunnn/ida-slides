@@ -86,9 +86,14 @@ to Python via a WKScriptMessageHandler.
   the preprocess; marp runs as a persistent `-w` watcher (one per deck,
   stopped on cleanup / file switch / engine switch) that re-renders when
   the prepared md is rewritten. The view reloads when marp logs its
-  render-complete line (`[ INFO ] … => <out>`) on stderr — NOT on mtime,
-  which can't tell this save's render from an earlier one and can be seen
-  mid-write. A 15s timeout only shows a "taking longer" heads-up; a dead
+  render-complete line (`[ INFO ] … => <out>`) on stderr — NOT on output
+  mtime as a trigger, which can be seen mid-write. A save landing
+  mid-render makes the first `=>` line describe the pre-save render, so
+  `_output_is_current` (output vs prepared-input mtime) discards it and
+  the follow-up render's line loads instead. While an `[ ERROR ]` is
+  latched, the fast path is disabled and the input force-rewritten, so a
+  same-content save re-surfaces the error instead of presenting the
+  pre-error html as success. A 15s timeout only shows a "taking longer" heads-up; a dead
   watcher is caught by `_on_marp_exit`. Tradeoff accepted for
   pixel-perfect themes; costs are blunted by the 200ms debounce,
   Hex-Rays' internal cfunc cache, slice-only tag_remove in

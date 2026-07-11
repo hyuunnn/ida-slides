@@ -194,6 +194,36 @@ def test_embed_regex_and_fences():
     eq(deck_preprocess.expand_embeds(inline).rstrip("\n"), inline)
 
 
+def test_output_is_current():
+    # a "=>" line for a render that predates the latest prepared input is
+    # stale and must not satisfy the wait (save landed mid-render)
+    d = tempfile.mkdtemp()
+    prepared = os.path.join(d, "in.md")
+    out = os.path.join(d, "out.html")
+    try:
+        with open(prepared, "w") as f:
+            f.write("x")
+        with open(out, "w") as f:
+            f.write("y")
+        os.utime(prepared, (1000, 1000))
+        os.utime(out, (2000, 2000))
+        truthy(webkit_view._output_is_current(out, prepared), "newer output")
+        os.utime(out, (500, 500))
+        truthy(not webkit_view._output_is_current(out, prepared),
+               "stale output must be skipped")
+        # unknowable cases resolve True (caller's isfile check owns them)
+        truthy(webkit_view._output_is_current(out, None), "no prepared path")
+        truthy(webkit_view._output_is_current(os.path.join(d, "gone"), prepared),
+               "missing output defers to _finish_render")
+    finally:
+        for p in (prepared, out):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+        os.rmdir(d)
+
+
 def test_file_watcher_stale_path():
     from file_watcher import DebouncedFileWatcher
 
@@ -304,6 +334,7 @@ ALL = [
     ("detect_engine_marp", test_detect_engine_marp),
     ("detect_engine_slidev", test_detect_engine_slidev),
     ("embed_regex_and_fences", test_embed_regex_and_fences),
+    ("output_is_current", test_output_is_current),
     ("file_watcher_stale_path", test_file_watcher_stale_path),
     ("copy_ref_name_validation", test_copy_ref_name_validation),
     ("resolve_ea", test_resolve_ea),

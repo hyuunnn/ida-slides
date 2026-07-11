@@ -303,6 +303,24 @@ def _with_detail(msg: str, detail: str | None) -> str:
     return f"{msg}: {detail}" if detail else msg
 
 
+def _output_is_current(out: str, prepared: str | None) -> bool:
+    """True when `out` was rendered from the latest prepared input.
+
+    A save landing while marp is mid-render makes the FIRST "=>" line
+    describe the pre-save render; loading that would show stale content
+    AND consume the wait, dropping the follow-up render's line. The input
+    is always rewritten before a re-render, so a current output is at
+    least as new as its input. Missing files resolve True — the caller's
+    isfile check owns that case.
+    """
+    if not prepared:
+        return True
+    try:
+        return os.path.getmtime(out) >= os.path.getmtime(prepared)
+    except OSError:
+        return True
+
+
 # marp aligns its log tags, so the spacing varies: "[ ERROR ]", "[  WARN ]"
 _MARP_PROBLEM_RE = re.compile(r"\[\s*(error|warn)\s*\]", re.IGNORECASE)
 
@@ -567,31 +585,43 @@ class DeckWebKitView(QWidget):
     # ------------------------------------------------------------------
     # Public surface (consumed by presenter_form)
     # ------------------------------------------------------------------
-    def load(self, path: str, restore_hash: str | None = None) -> None:
+    def load(self, path: str, restore_hash: str | None = None) -> bool:
+        """Show `path`. Returns False when the deck could not even be read
+        (an error is displayed); True otherwise, including the deferred
+        pre-attach case."""
         self._path = path
         ext = os.path.splitext(path)[1].lower()
         is_md = ext in (".md", ".markdown")
         # read the deck once per load: engine detection and _prepare_md
         # both need the text, and this runs on every save via reload()
         text: str | None = None
+        read_failed = False
         if is_md:
             text = _read_deck(path)
-            if text is None:
-                # don't fall through: detect_engine/_prepare_md would each
-                # retry the same unreadable file and start a pipeline for a
-                # deck that can't be read
-                self._show_status(
-                    f"cannot read deck: {os.path.basename(path)}"
-                )
-                return
-        engine = detect_engine(path, text) if is_md else "marp"
-        self.engine_label = "Slidev" if engine == "slidev" else "Marp"
+            read_failed = text is None
+            if not read_failed:
+                engine = detect_engine(path, text)
+            else:
+                engine = "marp"  # placeholder; no pipeline will start
+        else:
+            engine = "marp"
+        if not read_failed:
+            self.engine_label = "Slidev" if engine == "slidev" else "Marp"
         if self._web is None:
-            return  # _attach_webview picks it up
+            return True  # _attach_webview picks it up
         # clear any stale error banner (e.g. "marp watcher exited") so it
         # doesn't linger over a freshly loaded deck
         self._show_status("")
         self._discard_stale_generated(path)
+        if read_failed:
+            # settle BOTH pipelines before reporting: the previous deck's
+            # watcher must not keep running (its "=>" line would wipe this
+            # error and load the OLD deck), and its armed 15s timeout must
+            # not overwrite the message with "taking longer"
+            self._stop_marp()
+            self._stop_slidev()
+            self._show_status(f"cannot read deck: {os.path.basename(path)}")
+            return False
         if engine == "slidev":
             self._stop_marp()
             # a hash left by an earlier deck's unfinished navigation must
@@ -609,6 +639,7 @@ class DeckWebKitView(QWidget):
             # pre-rendered .html deck keeps its slide position
             self._pending_hash = restore_hash
             self._load_html(path)
+        return True
 
     def reload(self) -> None:
         if self._path is None or self._web is None:
@@ -897,10 +928,12 @@ class DeckWebKitView(QWidget):
             return
 
         out = self._sibling(md_path, "html")
-        # a vanished output with unchanged input would never re-render on a
-        # reused watcher (it only reacts to the prepared md being rewritten)
-        # — force the rewrite so a render is always coming in that case
-        force = not os.path.isfile(out)
+        # force the input rewrite when a reused watcher would otherwise
+        # never re-render even though we must not serve what's on disk:
+        # the output vanished, or the last render ERRORed (the html still
+        # holds the pre-error deck — re-rendering re-surfaces the error
+        # or picks up an external fix)
+        force = not os.path.isfile(out) or self._last_marp_err is not None
         prepared, changed = self._prepare_md(md_path, text, force_write=force)
 
         # start (or reuse) the watcher; `marp -w` logs "=> <out>" to stderr
@@ -926,15 +959,17 @@ class DeckWebKitView(QWidget):
         # await the next "=> out" render-complete line before loading. A
         # reused watcher whose input didn't change never re-renders, so it
         # would never log again — load what's already there directly. But
-        # not while a render is in flight (_pending_out set): loading the
-        # pre-save html would clear _pending_out and make the imminent
-        # "=> out" line be ignored, leaving the stale render on screen.
-        # (The vanished-output case falls through: force_write above
-        # rewrote the prepared md, so a render IS coming.)
+        # never while a render is in flight (_pending_out set: loading the
+        # pre-save html would consume the wait and drop the imminent
+        # "=> out" line) and never while an ERROR is latched (the html on
+        # disk predates the error; `force` above guarantees a render is
+        # coming that will either clear or re-surface it). The vanished-
+        # output case also falls through via `force`.
         if (
             not fresh
             and not changed
             and self._pending_out is None
+            and self._last_marp_err is None
             and os.path.isfile(out)
         ):
             self._finish_render(out, restore_hash)
@@ -972,7 +1007,10 @@ class DeckWebKitView(QWidget):
         if not os.path.isfile(out):
             # the "=> out" line arrived but the file is gone (deleted, or a
             # write that failed after logging); loading it would blank the
-            # view silently — keep waiting for a good render instead
+            # view silently — keep waiting for a good render instead, but
+            # drop the 15s timer so its generic "taking longer" notice
+            # can't overwrite this diagnostic
+            self._clear_render_timeout()
             self._show_status(
                 _with_detail("marp output missing", self._last_marp_err)
             )
@@ -1053,7 +1091,11 @@ class DeckWebKitView(QWidget):
             # line in the same buffer won't re-trigger.
             out = self._pending_out
             if out is not None and "=>" in line and os.path.basename(out) in line:
-                self._finish_render(out, self._pending_restore)
+                # a save landing mid-render makes this line describe the
+                # PRE-save render — skip it and keep waiting for the
+                # follow-up render of the rewritten input
+                if _output_is_current(out, self._generated_md):
+                    self._finish_render(out, self._pending_restore)
                 continue
             # marp tags real problems "[ ERROR ]"/"[  WARN ]"; matching a
             # bare "error" substring latches benign paths (error_x.md)

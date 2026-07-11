@@ -185,7 +185,11 @@ class SlidesForm(ida_kernwin.PluginForm):
         self._path = path
         if self._watcher is not None:
             self._watcher.watch(path)
-        self._renderer.load(path)
+        if not self._renderer.load(path):
+            # the renderer displayed why; don't stamp a status line with a
+            # stale engine label or clear the previous deck's lint warning
+            # for a deck that was never parsed
+            return
         label = f"{self._renderer.engine_label}/WebKit"
         self._status_base = f"{os.path.basename(path)}  [{label}]"
         self._refresh_status()
