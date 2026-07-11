@@ -441,7 +441,10 @@ class MarpWebKitView(QWidget):
         self._msg_handler = None
         self._ucc = None
         self._marp: str | None = None
-        self._proc: QProcess | None = None
+        self._proc: QProcess | None = None       # long-lived `marp -w` watcher
+        self._watch_key: tuple[str, str] | None = None
+        self._html_poll: QTimer | None = None
+        self._prepared_changed = False
         self.engine_label = "Marp"
         self._form_caption = "ida-slides"
 
@@ -528,12 +531,14 @@ class MarpWebKitView(QWidget):
         if self._web is None:
             return  # _attach_webview picks it up
         if engine == "slidev":
+            self._stop_marp()
             self._run_slidev(path)
         elif is_md:
             self._stop_slidev()
             self._run_marp(path)
         else:
             self._stop_slidev()
+            self._stop_marp()
             self._load_html(path)
 
     def reload(self) -> None:
@@ -566,16 +571,7 @@ class MarpWebKitView(QWidget):
 
     def cleanup(self) -> None:
         """Detach the native view; call before the Qt widget goes away."""
-        if self._proc is not None:
-            # the view is going away — a queued finished must not fire
-            # into handlers that touch the dead widget
-            proc, self._proc = self._proc, None
-            try:
-                proc.finished.disconnect()
-                proc.errorOccurred.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            proc.kill()
+        self._stop_marp()
         self._stop_slidev()
         if self._ucc is not None:
             try:
@@ -626,7 +622,8 @@ class MarpWebKitView(QWidget):
             if os.path.exists(out):
                 with open(out, encoding="utf-8", errors="replace") as f:
                     old = f.read()
-            if old != expanded:
+            self._prepared_changed = old != expanded
+            if self._prepared_changed:
                 with open(out, "w", encoding="utf-8") as f:
                     f.write(expanded)
         except OSError:
@@ -759,6 +756,13 @@ class MarpWebKitView(QWidget):
     # marp CLI pipeline
     # ------------------------------------------------------------------
     def _run_marp(self, md_path: str) -> None:
+        """Render via a persistent `marp -w` watcher.
+
+        The watcher is started once per deck and re-renders whenever the
+        prepared md is rewritten, so a save costs one render instead of a
+        node cold-start + render. It is stopped on cleanup, when another
+        file is loaded, and when the deck switches to the slidev engine.
+        """
         if self._marp is None:
             self._marp = find_marp()
         if self._marp is None:
@@ -769,58 +773,108 @@ class MarpWebKitView(QWidget):
 
         stem = os.path.splitext(os.path.basename(md_path))[0]
         out = os.path.join(os.path.dirname(md_path), f".{stem}.ida-slides.html")
+        baseline = self._html_mtime(out)  # before the input is rewritten
         prepared = self._prepare_md(md_path)
 
+        if self._proc is None or self._watch_key != (prepared, out):
+            self._stop_marp()
+            proc = QProcess(self)
+            proc.setProgram(self._marp)
+            proc.setArguments(["-w", prepared, "-o", out, "--html"])
+            # marp blocks reading stdin when it is a pipe
+            proc.setStandardInputFile(QProcess.nullDevice())
+            proc.setProcessEnvironment(self._tool_env(self._marp))
+            proc.finished.connect(self._on_marp_exit)
+            proc.errorOccurred.connect(self._on_marp_error)
+            proc.readyReadStandardError.connect(self._drain_marp_stderr)
+            self._proc = proc
+            self._watch_key = (prepared, out)
+            proc.start()
+
+        self._await_html(out, baseline)
+
+    def _stop_marp(self) -> None:
+        if self._html_poll is not None:
+            self._html_poll.stop()
+            self._html_poll = None
+        self._watch_key = None
         if self._proc is not None:
-            # disconnect before killing: the dead process's queued
-            # finished/errorOccurred would otherwise fire into the shared
-            # handlers and clobber self._proc, which points at the NEW
-            # process by then (same defense as _stop_slidev)
+            # disconnect before killing: the dead watcher's queued signals
+            # must not fire into handlers that touch the replacement (same
+            # defense as _stop_slidev)
             proc, self._proc = self._proc, None
             try:
                 proc.finished.disconnect()
                 proc.errorOccurred.disconnect()
+                proc.readyReadStandardError.disconnect()
             except (RuntimeError, TypeError):
                 pass
             proc.kill()
+            proc.waitForFinished(1000)
 
-        self._show_status("marp rendering…")
-        proc = QProcess(self)
-        proc.setProgram(self._marp)
-        proc.setArguments([prepared, "-o", out, "--html"])
-        # marp blocks reading stdin when it is a pipe
-        proc.setStandardInputFile(QProcess.nullDevice())
-        proc.setProcessEnvironment(self._tool_env(self._marp))
-        proc.finished.connect(
-            lambda code, _st, out=out: self._on_marp_finished(code, out)
-        )
-        proc.errorOccurred.connect(self._on_marp_error)
-        self._proc = proc
-        proc.start()
+    @staticmethod
+    def _html_mtime(path: str) -> int | None:
+        try:
+            return os.stat(path).st_mtime_ns
+        except OSError:
+            return None
+
+    def _await_html(self, out: str, baseline: int | None) -> None:
+        """(Re)load `out` once the marp watcher has rewritten it."""
+        if self._html_poll is not None:
+            self._html_poll.stop()
+            self._html_poll = None
+        # no "rendering…" status here: the label popping in and out
+        # reflows the pane on every save, and the refresh is visible anyway
+
+        state = {"ticks": 0}
+        timer = QTimer(self)
+
+        def _tick() -> None:
+            state["ticks"] += 1
+            mtime = self._html_mtime(out)
+            rendered = mtime is not None and mtime != baseline
+            # an unchanged prepared md never re-renders — reload as-is
+            unchanged = mtime is not None and not self._prepared_changed
+            if rendered or unchanged:
+                timer.stop()
+                self._html_poll = None
+                self._show_status("")
+                if self._generated and self._generated != out:
+                    self._remove_generated()
+                self._generated = out
+                self._load_html(out)
+                return
+            if state["ticks"] >= 150:  # ~15s: marp died or deck is huge
+                timer.stop()
+                self._html_poll = None
+                self._show_status("marp render timed out — see Output window")
+
+        timer.timeout.connect(_tick)
+        self._html_poll = timer
+        timer.start(100)
 
     def _on_marp_error(self, _error) -> None:
         self._proc = None
+        self._watch_key = None
         self._show_status("marp CLI failed to start")
 
-    def _on_marp_finished(self, exit_code: int, out: str) -> None:
-        stderr = ""
-        if self._proc is not None:
-            stderr = bytes(self._proc.readAllStandardError()).decode(
-                "utf-8", "replace"
-            )
-            self._proc = None
-        if exit_code != 0 or not os.path.isfile(out):
-            detail = stderr.strip().splitlines()
-            self._show_status(
-                f"marp failed (exit {exit_code})"
-                + (f": {detail[-1]}" if detail else "")
-            )
+    def _on_marp_exit(self, code: int, _status) -> None:
+        # the watcher should outlive every save; if it dies, say so and
+        # let the next save/reload start a fresh one
+        self._drain_marp_stderr()
+        self._proc = None
+        self._watch_key = None
+        self._show_status(f"marp watcher exited (code {code}) — reload to restart")
+
+    def _drain_marp_stderr(self) -> None:
+        if self._proc is None:
             return
-        self._show_status("")
-        if self._generated and self._generated != out:
-            self._remove_generated()
-        self._generated = out
-        self._load_html(out)
+        data = bytes(self._proc.readAllStandardError()).decode(
+            "utf-8", "replace"
+        ).strip()
+        if data:
+            logger.debug("marp: %s", data)
 
     def _remove_generated(self) -> None:
         for attr in ("_generated", "_generated_md"):
