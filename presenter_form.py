@@ -18,7 +18,7 @@ FILE_FILTER = "*.md;*.markdown;*.html"
 _MD_EXTS = (".md", ".markdown")
 
 
-class MarpPresenterForm(ida_kernwin.PluginForm):
+class SlidesForm(ida_kernwin.PluginForm):
     """Dockable IDA tab that renders a Marp/Slidev deck.
 
     Rendering is native WKWebView only (macOS + PyObjC): .md decks go
@@ -30,7 +30,7 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
     existing tab rather than spawning a duplicate.
     """
 
-    _instance: "MarpPresenterForm | None" = None
+    _instance: "SlidesForm | None" = None
 
     def __init__(self):
         ida_kernwin.PluginForm.__init__(self)
@@ -157,7 +157,7 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
             )
             return False
 
-        new_renderer = webkit_view.MarpWebKitView()
+        new_renderer = webkit_view.DeckWebKitView()
         new_renderer._form_caption = _FORM_CAPTION
         self._renderer = new_renderer
         self._layout.addWidget(new_renderer, 1)

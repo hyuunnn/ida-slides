@@ -42,8 +42,8 @@ rendering into an external browser window were considered and rejected.
 ## Architecture
 
 ```
-marp_presenter_entry.py  plugin entry (env gate) → marp_presenter.py
-marp_presenter.py        action/menu registration (Ctrl+Shift+M)
+ida_slides_entry.py      plugin entry (env gate) → ida_slides.py
+ida_slides.py            action/menu registration (Ctrl+Shift+M)
 presenter_form.py        dockable PluginForm: toolbar, webkit renderer,
                          file watcher wiring, lint display
 webkit_view.py           the one renderer: native WKWebView via PyObjC,

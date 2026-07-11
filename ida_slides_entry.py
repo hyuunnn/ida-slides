@@ -26,19 +26,18 @@ def _disable_reason() -> str | None:
     except ImportError as exc:
         return f"ida-slides: PySide6 not importable ({exc})"
 
-    # QtWebEngine (for .html decks) and the markdown package (for .md decks)
-    # are optional; their absence is reported when the relevant file type is
-    # opened, so the plugin itself always loads.
+    # WKWebView (macOS + PyObjC) and the marp/slidev CLIs are checked when
+    # a deck is actually opened, so the plugin itself always loads.
     return None
 
 
 _REASON = _disable_reason()
 
 if _REASON is None:
-    from marp_presenter import marp_presenter_plugin_t
+    from ida_slides import ida_slides_plugin_t
 
     def PLUGIN_ENTRY():
-        return marp_presenter_plugin_t()
+        return ida_slides_plugin_t()
 
 else:
     logger.warning(_REASON)
@@ -48,7 +47,7 @@ else:
     except ImportError:
         import idaapi as ida_idaapi
 
-    class _marp_presenter_nop_plugin_t(ida_idaapi.plugin_t):
+    class _ida_slides_nop_plugin_t(ida_idaapi.plugin_t):
         flags = ida_idaapi.PLUGIN_HIDE | ida_idaapi.PLUGIN_UNL
         wanted_name = "ida-slides (disabled)"
         comment = _REASON or "ida-slides is disabled in this IDA environment"
@@ -65,4 +64,4 @@ else:
             pass
 
     def PLUGIN_ENTRY():
-        return _marp_presenter_nop_plugin_t()
+        return _ida_slides_nop_plugin_t()

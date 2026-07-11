@@ -447,7 +447,7 @@ def _make_objc_classes():
     return _classes
 
 
-class MarpWebKitView(QWidget):
+class DeckWebKitView(QWidget):
     """Renders a Marp deck with a native WKWebView.
 
     .md files are converted via marp CLI to a hidden HTML file next to the

@@ -2,7 +2,7 @@
   "IDAMetadataDescriptorVersion": 1,
   "plugin": {
     "name": "ida-slides",
-    "entryPoint": "marp_presenter_entry.py",
+    "entryPoint": "ida_slides_entry.py",
     "version": "0.3.0",
     "idaVersions": ">=9.2",
     "platforms": [
