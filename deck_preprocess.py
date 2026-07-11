@@ -22,7 +22,7 @@ import ida_links
 
 logger = logging.getLogger(__name__)
 
-_FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")  # keep in sync with marp_markdown
 _INLINE_CODE_RE = re.compile(r"`[^`]*`")
 
 EMBED_RE = re.compile(
@@ -61,13 +61,16 @@ def decompile_lines(
     if cfunc is None:
         return None, "decompilation failed"
 
-    raw = [ida_lines.tag_remove(sl.line) for sl in cfunc.get_pseudocode()]
-    total = len(raw)
+    sv = cfunc.get_pseudocode()
+    total = sv.size()
     lo = 1 if start is None else max(1, start)
     hi = total if end is None else min(total, end)
     if lo > hi or lo > total:
         return None, f"line range out of bounds (function has {total} lines)"
-    return raw[lo - 1 : hi], None
+    # strip color tags only from the requested lines — a one-line embed
+    # (or an 8-line hover preview) of a huge function must not pay for
+    # converting every line
+    return [ida_lines.tag_remove(sv[i].line) for i in range(lo - 1, hi)], None
 
 
 def preview_text(name: str, line: int | None = None, context: int = 8) -> str:
@@ -194,7 +197,8 @@ def expand_embeds(text: str) -> str:
             marker = m.group(1)
             if fence is None:
                 fence = marker
-            elif fence == marker:
+            elif marker[0] == fence[0] and len(marker) >= len(fence):
+                # CommonMark closing-fence rule; see marp_markdown
                 fence = None
             out.append(line)
             continue

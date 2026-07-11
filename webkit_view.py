@@ -59,7 +59,7 @@ USER_JS = r"""
     if (window.__idaPptHooked) return;
     window.__idaPptHooked = true;
 
-    var RE = /@(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)(?::(\d+))?/g;
+    var RE = __IDA_TOKEN_RE__;
 
     function addStyle() {
         if (!document.head || document.getElementById('ida-xref-style')) return;
@@ -246,7 +246,7 @@ USER_JS = r"""
         }
     }, true);
 })();
-"""
+""".replace("__IDA_TOKEN_RE__", ida_links.JS_TOKEN_RE)
 
 
 def _find_node_tool(name: str) -> str | None:
@@ -299,7 +299,8 @@ def detect_engine(md_path: str) -> str:
     override = keys.get("ida-slides-engine", "").lower()
     if override in ("marp", "slidev"):
         return override
-    if "marp" in keys:
+    marp_val = keys.get("marp")
+    if marp_val is not None and marp_val.lower() not in ("false", "no", "off", "0"):
         return "marp"
     if _SLIDEV_FM_KEYS & keys.keys() and find_slidev():
         return "slidev"
@@ -789,14 +790,7 @@ class MarpWebKitView(QWidget):
         proc.setArguments([prepared, "-o", out, "--html"])
         # marp blocks reading stdin when it is a pipe
         proc.setStandardInputFile(QProcess.nullDevice())
-        # marp's `#!/usr/bin/env node` shebang needs node on PATH, which a
-        # Dock-launched IDA doesn't have — node sits next to the marp script
-        env = QProcessEnvironment.systemEnvironment()
-        marp_dir = os.path.dirname(self._marp)
-        path = env.value("PATH", "")
-        if marp_dir not in path.split(":"):
-            env.insert("PATH", f"{marp_dir}:{path}" if path else marp_dir)
-        proc.setProcessEnvironment(env)
+        proc.setProcessEnvironment(self._tool_env(self._marp))
         proc.finished.connect(
             lambda code, _st, out=out: self._on_marp_finished(code, out)
         )
@@ -925,11 +919,9 @@ class MarpWebKitView(QWidget):
         if self._web is None or not self._pending_hash:
             return
         try:
-            # Bespoke.js reads the hash on hashchange: flip then restore.
-            js = (
-                "window.location.hash = '#/0';"
-                f"window.location.hash = {json.dumps(self._pending_hash)};"
-            )
+            import marp_markdown
+
+            js = marp_markdown.bespoke_restore_js(self._pending_hash)
             self._web.evaluateJavaScript_completionHandler_(js, None)
             self._pending_hash = None
         except Exception:

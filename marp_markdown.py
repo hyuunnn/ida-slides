@@ -16,15 +16,26 @@ try:
 except ImportError:  # gate at call site so the plugin still loads without it
     _markdown_mod = None
 
-_FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 _SEPARATOR_RE = re.compile(r"^---\s*$")
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 _MD_EXTENSIONS = ["fenced_code", "tables", "sane_lists"]
 
 
-def markdown_available() -> bool:
-    return _markdown_mod is not None
+def bespoke_restore_js(hash_value: str) -> str:
+    """JS that restores a Bespoke.js slide position after a reload.
+
+    Bespoke only repositions on hashchange, so re-setting the same hash is
+    a no-op — flip to slide 0 first, then to the saved hash. Shared by the
+    WKWebView and QtWebEngine renderers.
+    """
+    import json
+
+    return (
+        "window.location.hash = '#/0';"
+        f"window.location.hash = {json.dumps(hash_value)};"
+    )
 
 
 def strip_front_matter(text: str) -> str:
@@ -48,12 +59,21 @@ def split_slides(text: str) -> list[str]:
             marker = fence_match.group(1)
             if fence is None:
                 fence = marker
-            elif fence == marker:
+            elif marker[0] == fence[0] and len(marker) >= len(fence):
+                # CommonMark: a closing fence must use the same char and
+                # be at least as long as the opener — an inner ``` does
+                # not close a ```` block
                 fence = None
             current.append(line)
             continue
 
         if fence is None and _SEPARATOR_RE.match(line):
+            # CommonMark: '---' directly under a non-blank line is a setext
+            # H2 underline, not a thematic break — marp keeps it on the
+            # same slide, so we must too
+            if current and current[-1].strip():
+                current.append(line)
+                continue
             slides.append("\n".join(current).strip())
             current = []
             continue

@@ -23,6 +23,11 @@ IDA_URL_SCHEME = "ida"
 _NAME_PATTERN = r"0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*"
 TOKEN_RE = re.compile(rf"(?<![A-Za-z0-9_@])@({_NAME_PATTERN})(?::(\d+))?")
 
+# the same grammar as a JS regex literal — single source for both injected
+# linkifiers (LINKIFY_JS below and webkit_view.USER_JS); the JS side does
+# the email-@ guard as a prev-char check instead of a lookbehind
+JS_TOKEN_RE = rf"/@({_NAME_PATTERN})(?::(\d+))?/g"
+
 _TAG_SPLIT_RE = re.compile(r"(<[^>]*>)")
 
 
@@ -221,7 +226,7 @@ LINKIFY_JS = r"""
     if (window.__idaPptLinkified) return;
     window.__idaPptLinkified = true;
 
-    var RE = /@(0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*)(?::(\d+))?/g;
+    var RE = __IDA_TOKEN_RE__;
 
     var style = document.createElement('style');
     style.textContent =
@@ -262,4 +267,4 @@ LINKIFY_JS = r"""
         n.parentNode.replaceChild(span, n);
     });
 })();
-"""
+""".replace("__IDA_TOKEN_RE__", JS_TOKEN_RE)

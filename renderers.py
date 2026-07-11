@@ -296,10 +296,8 @@ def create_web_slide_view(parent: QWidget | None = None) -> QWidget:
                 return
             page = self._web.page()
             if self._pending_hash:
-                # Bespoke.js reads the hash on hashchange: flip then restore.
                 page.runJavaScript(
-                    f"window.location.hash = '#/0';"
-                    f"window.location.hash = {self._pending_hash!r};"
+                    marp_markdown.bespoke_restore_js(self._pending_hash)
                 )
                 self._pending_hash = None
             page.runJavaScript(ida_links.LINKIFY_JS)
