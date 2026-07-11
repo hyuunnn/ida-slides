@@ -37,7 +37,8 @@ that jumps the disassembly view:
 - Works inline in code too: `call @sub_401000`
 - Add `:N` to land on a pseudocode line: @main:12
 
-Unknown names render dimmed instead of linked: @no_such_name_here
+Unknown names still look like links — clicking reports to IDA's Output
+window, and the toolbar lint flags them: @no_such_name_here
 
 ---
 

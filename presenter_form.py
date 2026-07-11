@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import QLabel, QToolBar, QVBoxLayout, QWidget
 
-import renderers
 import webkit_view
 from file_watcher import DebouncedFileWatcher
 
@@ -20,11 +19,12 @@ _MD_EXTS = (".md", ".markdown")
 
 
 class MarpPresenterForm(ida_kernwin.PluginForm):
-    """Dockable IDA tab that renders a Marp deck.
+    """Dockable IDA tab that renders a Marp/Slidev deck.
 
-    .md files render in a built-in QTextBrowser slide viewer (works
-    everywhere); .html files (marp-cli output) render in QtWebEngine when
-    available. Both make @name tokens clickable to jump the IDA view.
+    Rendering is native WKWebView only (macOS + PyObjC): .md decks go
+    through the marp CLI or a slidev dev server, .html files (marp-cli
+    output) load directly. There is no fallback viewer — without WKWebView
+    or the engine's CLI the deck simply doesn't render.
 
     Class-level singleton: a second `show_for_file()` swaps the file in the
     existing tab rather than spawning a duplicate.
@@ -37,7 +37,6 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
         self._path: str | None = None
         self._watcher: DebouncedFileWatcher | None = None
         self._renderer: QWidget | None = None
-        self._renderer_kind: str | None = None
         self._layout: QVBoxLayout | None = None
         self._status: QLabel | None = None
         self._warn: QLabel | None = None
@@ -136,68 +135,33 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
         if self._watcher is not None:
             self._watcher.unwatch()
             self._watcher = None
-        if self._renderer is not None and hasattr(self._renderer, "cleanup"):
+        if self._renderer is not None:
             self._renderer.cleanup()
         self._renderer = None
-        self._renderer_kind = None
         self._layout = None
         type(self)._instance = None
 
     # ------------------------------------------------------------------
     # Renderer management
     # ------------------------------------------------------------------
-    def _ensure_renderer(self, kind: str) -> bool:
-        if self._renderer is not None and self._renderer_kind == kind:
+    def _ensure_renderer(self) -> bool:
+        if self._renderer is not None:
             return True
         if self._layout is None:
             return False
+        if not webkit_view.webkit_available():
+            ida_kernwin.warning(
+                "ida-slides: rendering requires macOS with PyObjC "
+                "(native WKWebView).\n\n"
+                "Install with: pip install --user pyobjc-framework-WebKit"
+            )
+            return False
 
-        if kind == "webkit":
-            new_renderer = webkit_view.MarpWebKitView()
-            new_renderer._form_caption = _FORM_CAPTION
-        elif kind == "web":
-            try:
-                new_renderer = renderers.create_web_slide_view()
-            except ImportError:
-                ida_kernwin.warning(
-                    "ida-slides: neither WKWebView (macOS + pyobjc) nor "
-                    "QtWebEngine is available, so .html decks cannot be "
-                    "rendered.\n\n"
-                    "Open the Markdown (.md) deck instead — the built-in "
-                    "slide viewer needs no extra packages."
-                )
-                return False
-        else:
-            new_renderer = renderers.SlideView()
-
-        self._drop_renderer()
-
+        new_renderer = webkit_view.MarpWebKitView()
+        new_renderer._form_caption = _FORM_CAPTION
         self._renderer = new_renderer
-        self._renderer_kind = kind
         self._layout.addWidget(new_renderer, 1)
         return True
-
-    def _drop_renderer(self) -> None:
-        if self._renderer is None:
-            return
-        if hasattr(self._renderer, "cleanup"):
-            self._renderer.cleanup()
-        if self._layout is not None:
-            self._layout.removeWidget(self._renderer)
-        self._renderer.deleteLater()
-        self._renderer = None
-        self._renderer_kind = None
-
-    @staticmethod
-    def _pick_renderer_kind(ext: str) -> str:
-        if webkit_view.webkit_available():
-            # native WKWebView renders real marp CLI output for both cases
-            if ext in _MD_EXTS and webkit_view.find_marp() is None:
-                return "md"  # no marp binary — built-in viewer
-            return "webkit"
-        if ext in _MD_EXTS:
-            return "md"
-        return "web"
 
     # ------------------------------------------------------------------
     # File loading
@@ -206,22 +170,14 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
         if not os.path.isfile(path):
             ida_kernwin.warning(f"ida-slides: file not found:\n{path}")
             return
-
-        ext = os.path.splitext(path)[1].lower()
-        kind = self._pick_renderer_kind(ext)
-        if not self._ensure_renderer(kind):
+        if not self._ensure_renderer():
             return
 
         self._path = path
         if self._watcher is not None:
             self._watcher.watch(path)
         self._renderer.load(path)
-        if kind == "webkit":
-            label = f"{self._renderer.engine_label}/WebKit"
-        elif kind == "web":
-            label = "Marp/WebEngine"
-        else:
-            label = "basic"
+        label = f"{self._renderer.engine_label}/WebKit"
         self._status_base = f"{os.path.basename(path)}  [{label}]"
         self._refresh_status()
 
@@ -288,10 +244,6 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
     def _on_file_changed(self, path: str) -> None:
         if path != self._path or self._renderer is None:
             return
-        # slidev's HMR handles saves itself; other renderers re-render
-        handler = getattr(self._renderer, "on_source_changed", None)
-        if handler is not None:
-            handler()
-        else:
-            self._renderer.reload()
+        # slidev's HMR handles saves itself; the marp path re-renders
+        self._renderer.on_source_changed()
         self._refresh_status()

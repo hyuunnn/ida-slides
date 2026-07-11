@@ -1,8 +1,8 @@
 """Markdown preprocessing: expand `@name[a:b]` tokens into fenced code
 blocks holding the Hex-Rays pseudocode of that function.
 
-Runs before the deck reaches the rendering engine (marp CLI, slidev, or the
-built-in viewer), so embeds work identically everywhere. Supported forms:
+Runs before the deck reaches the rendering engine (marp CLI or slidev), so
+embeds work identically in both. Supported forms:
 
     @sub_401000[1:5]     lines 1-5 of the pseudocode
     @sub_401000[:5]      lines 1-5
@@ -141,9 +141,9 @@ def _render_embed(match: re.Match) -> str:
 def unresolved_refs(text: str) -> list[tuple[int, str]]:
     """(slide_no, "@token") pairs whose names the open IDB can't resolve.
 
-    Slide numbers are 1-based and use the same splitting as the built-in
-    viewer, so they match the deck the presenter sees. Trailing dots are
-    trimmed the same way linkify does, so sentence punctuation after a
+    Slide numbers are 1-based, split by `marp_markdown.split_slides`, so
+    they match the deck the presenter sees. Trailing dots are trimmed the
+    same way the injected linkifier does, so sentence punctuation after a
     token isn't reported as part of the name.
     """
     import ida_idaapi

@@ -27,8 +27,7 @@ def bespoke_restore_js(hash_value: str) -> str:
     """JS that restores a Bespoke.js slide position after a reload.
 
     Bespoke only repositions on hashchange, so re-setting the same hash is
-    a no-op — flip to slide 0 first, then to the saved hash. Shared by the
-    WKWebView and QtWebEngine renderers.
+    a no-op — flip to slide 0 first, then to the saved hash.
     """
     import json
 

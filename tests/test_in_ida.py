@@ -82,19 +82,8 @@ def test_token_regex():
 
 
 def test_js_token_re_substituted():
-    truthy("__IDA_TOKEN_RE__" not in ida_links.LINKIFY_JS, "LINKIFY_JS")
     truthy("__IDA_TOKEN_RE__" not in webkit_view.USER_JS, "USER_JS")
     truthy(ida_links.JS_TOKEN_RE.startswith("/@("), ida_links.JS_TOKEN_RE)
-
-
-def test_href_roundtrip():
-    try:
-        from PySide6.QtCore import QUrl
-    except Exception as exc:
-        raise _Skip(f"no PySide6 ({exc})")
-    for name, line in [("sub_401000", None), ("main", 12), ("_Z3foov", 3)]:
-        url = QUrl(ida_links.make_href(name, line))
-        eq(ida_links.name_from_url(url), (name, line))
 
 
 def test_split_slides_setext():
@@ -258,7 +247,6 @@ def test_unresolved_refs_live():
 ALL = [
     ("token_regex", test_token_regex),
     ("js_token_re_substituted", test_js_token_re_substituted),
-    ("href_roundtrip", test_href_roundtrip),
     ("split_slides_setext", test_split_slides_setext),
     ("split_slides_fence_length", test_split_slides_fence_length),
     ("strip_front_matter", test_strip_front_matter),

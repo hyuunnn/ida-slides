@@ -1,21 +1,14 @@
 """Turn `@name` / `@0xADDR` tokens into clickable links that jump IDA views.
 
-Shared by both renderers:
-- the QTextBrowser renderer calls `linkify_html()` on server-side rendered HTML
-- the QWebEngineView renderer injects `LINKIFY_JS` into the loaded Marp deck
-
-Both emit `ida:///<percent-encoded-name>` URLs. The name lives in the URL
-*path* (triple slash) because QUrl lowercases the host part, which would
-corrupt case-sensitive IDA names like `@sub_DEADBEEF`.
+The token grammar lives here; the actual linkification happens in
+`webkit_view.USER_JS` (a WKUserScript over the rendered DOM), which gets
+the grammar via `JS_TOKEN_RE`.
 """
 
 import logging
 import re
-import urllib.parse
 
 logger = logging.getLogger(__name__)
-
-IDA_URL_SCHEME = "ida"
 
 # @sub_401000, @main, @_Z3foov, @.init_proc, @0x401000
 # an optional :N suffix targets pseudocode line N (@sub_401000:22);
@@ -23,30 +16,10 @@ IDA_URL_SCHEME = "ida"
 _NAME_PATTERN = r"0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*"
 TOKEN_RE = re.compile(rf"(?<![A-Za-z0-9_@])@({_NAME_PATTERN})(?::(\d+))?")
 
-# the same grammar as a JS regex literal — single source for both injected
-# linkifiers (LINKIFY_JS below and webkit_view.USER_JS); the JS side does
-# the email-@ guard as a prev-char check instead of a lookbehind
+# the same grammar as a JS regex literal — single source for the injected
+# linkifier (webkit_view.USER_JS); the JS side does the email-@ guard as a
+# prev-char check instead of a lookbehind
 JS_TOKEN_RE = rf"/@({_NAME_PATTERN})(?::(\d+))?/g"
-
-_TAG_SPLIT_RE = re.compile(r"(<[^>]*>)")
-
-
-def make_href(name: str, line: int | None = None) -> str:
-    href = f"{IDA_URL_SCHEME}:///{urllib.parse.quote(name, safe='')}"
-    return f"{href}:{line}" if line else href
-
-
-def name_from_url(url) -> tuple[str, int | None] | None:
-    """Extract (name, line) from a QUrl if it is an ida:/// link, else None."""
-    if url.scheme() != IDA_URL_SCHEME:
-        return None
-    spec = urllib.parse.unquote(url.path().lstrip("/"))
-    if not spec:
-        return None
-    name, _, line_s = spec.rpartition(":")
-    if name and line_s.isdigit():
-        return name, int(line_s)
-    return spec, None
 
 
 def resolve_ea(name: str) -> int:
@@ -173,98 +146,3 @@ def _jump_to_pseudocode_line(ea: int, line: int, name: str) -> bool:
         return _jump_no_focus(ea)
 
 
-def linkify_html(
-    html: str,
-    is_resolved=is_resolvable,
-    link_color: str = "#4ea1ff",
-    link_bg: str = "#2a3b52",
-    unresolved_color: str = "#9aa0a6",
-) -> str:
-    """Replace @tokens in the text portions of `html` with styled anchors.
-
-    Tokens inside tag markup are untouched; tokens inside <pre>/<code> text
-    are linkified on purpose so decks can show clickable snippets.
-    Inline styles are used because QTextBrowser's CSS support for class
-    selectors is unreliable.
-    """
-
-    def _sub(m: re.Match) -> str:
-        name = m.group(1)
-        line = int(m.group(2)) if m.group(2) else None
-        # trailing dots are almost always sentence punctuation, not part of
-        # the name ("... @main. Next ...")
-        trail = ""
-        while name.endswith(".") and not is_resolved(name):
-            name = name[:-1]
-            trail += "."
-        if not name:
-            return m.group(0)
-        token = "@" + name + (f":{line}" if line else "")
-        if is_resolved(name):
-            return (
-                f'<a href="{make_href(name, line)}" style="'
-                f"color:{link_color}; background-color:{link_bg}; "
-                f'text-decoration:none; font-family:monospace;">{token}</a>{trail}'
-            )
-        return (
-            f'<span style="color:{unresolved_color}; font-family:monospace;">'
-            f"{token}</span>{trail}"
-        )
-
-    parts = _TAG_SPLIT_RE.split(html)
-    for i, part in enumerate(parts):
-        if part.startswith("<"):
-            continue
-        parts[i] = TOKEN_RE.sub(_sub, part)
-    return "".join(parts)
-
-
-# Injected into Marp HTML decks rendered by QWebEngineView. Wraps @tokens in
-# anchors; clicks are intercepted by acceptNavigationRequest on the page.
-LINKIFY_JS = r"""
-(function () {
-    if (window.__idaPptLinkified) return;
-    window.__idaPptLinkified = true;
-
-    var RE = __IDA_TOKEN_RE__;
-
-    var style = document.createElement('style');
-    style.textContent =
-        'a.ida-xref{color:#4ea1ff;background:rgba(78,161,255,.15);' +
-        'border-radius:3px;padding:0 .15em;text-decoration:none;' +
-        'font-family:monospace;}' +
-        'a.ida-xref:hover{background:rgba(78,161,255,.35);}';
-    document.head.appendChild(style);
-
-    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    var targets = [];
-    while (walker.nextNode()) {
-        var n = walker.currentNode;
-        if (n.parentElement && n.parentElement.closest('a,script,style')) continue;
-        RE.lastIndex = 0;
-        if (RE.test(n.nodeValue)) targets.push(n);
-    }
-    targets.forEach(function (n) {
-        var span = document.createElement('span');
-        var escaped = n.nodeValue.replace(/[&<>]/g, function (c) {
-            return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c];
-        });
-        RE.lastIndex = 0;
-        span.innerHTML = escaped.replace(RE, function (m, name, line, offset, str) {
-            var prev = offset > 0 ? str.charAt(offset - 1) : '';
-            if (/[A-Za-z0-9_@]/.test(prev)) return m;   // user@host etc.
-            var trail = '';
-            while (name.length && name.slice(-1) === '.') {
-                name = name.slice(0, -1);
-                trail += '.';
-            }
-            if (!name.length) return m;
-            var label = '@' + name + (line ? ':' + line : '');
-            return '<a class="ida-xref" href="ida:///' +
-                encodeURIComponent(name) + (line ? ':' + line : '') +
-                '">' + label + '</a>' + trail;
-        });
-        n.parentNode.replaceChild(span, n);
-    });
-})();
-""".replace("__IDA_TOKEN_RE__", JS_TOKEN_RE)

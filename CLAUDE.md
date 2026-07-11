@@ -44,18 +44,16 @@ rendering into an external browser window were considered and rejected.
 ```
 marp_presenter_entry.py  plugin entry (env gate) → marp_presenter.py
 marp_presenter.py        action/menu registration (Ctrl+Shift+M)
-presenter_form.py        dockable PluginForm: toolbar, renderer choice,
+presenter_form.py        dockable PluginForm: toolbar, webkit renderer,
                          file watcher wiring, lint display
-webkit_view.py           macOS renderer: native WKWebView via PyObjC,
+webkit_view.py           the one renderer: native WKWebView via PyObjC,
                          marp/slidev CLI pipeline, injected USER_JS,
                          JS↔Python message bridge
-renderers.py             fallbacks: built-in QTextBrowser slide viewer
-                         and a thin QtWebEngine view (pre-rendered .html)
-ida_links.py             @token grammar (TOKEN_RE), resolution, jumps,
-                         linkify (Python + LINKIFY_JS for QtWebEngine)
+ida_links.py             @token grammar (TOKEN_RE / JS_TOKEN_RE),
+                         resolution, jumps
 deck_preprocess.py       embed expansion, hover-preview text, deck lint
-marp_markdown.py         front matter / slide splitting for the built-in
-                         viewer and for lint slide numbers
+marp_markdown.py         front matter / slide splitting (lint slide
+                         numbers, bespoke hash-restore JS)
 copy_ref.py              Copy @reference context-menu action
 file_watcher.py          debounced, rename-surviving file watcher
 ```
@@ -72,10 +70,10 @@ to Python via a WKScriptMessageHandler.
 - **WKWebView over QtWebEngine (macOS).** IDA's bundled PySide6 has no
   QtWebEngine, and pip's QtWebEngine wheels can ABI-clash with IDA's
   bundled Qt. The system WebKit is free, native, and GPU-accelerated.
-  Tradeoff: the plugin is **macOS-only for now** (owner's explicit call —
-  don't invest in cross-platform work unless asked). Other platforms get
-  reduced fallbacks: QtWebEngine for pre-rendered .html, built-in
-  QTextBrowser for .md.
+  Tradeoff: the plugin is **macOS-only** (owner's explicit call — don't
+  invest in cross-platform work unless asked). There are NO fallback
+  renderers: without WKWebView or the deck's engine CLI (marp/slidev),
+  decks simply don't render (a warning / status message says why).
 - **PyObjC crash safety (documented in webkit_view.py header).** A
   Python exception escaping a PyObjC delegate aborts IDA, and PyObjC
   cannot call WebKit completion-handler *blocks* at all. Therefore no
@@ -111,24 +109,27 @@ to Python via a WKScriptMessageHandler.
   pointers can hard-crash IDA (not catchable in Python). Re-resolve via
   `find_widget(title)` + `get_widget_vdui()` and compare `cfunc.entry_ea`
   before touching the viewer (see `_jump_to_pseudocode_line`).
-- **@token linkify logic exists in three copies** — Python
-  `linkify_html`, `LINKIFY_JS` (QtWebEngine), `USER_JS` (WKWebView). The
-  grammar itself is single-sourced (`ida_links.JS_TOKEN_RE` is generated
-  from `_NAME_PATTERN` and substituted into both JS blobs), but the
-  surrounding logic (escaping, trailing-dot trim, email guard as a
-  prev-char check) is still hand-mirrored. Behavioral quirk: Python trims
-  trailing dots only when unresolvable; JS trims unconditionally (no IDB
-  access at render time).
+- **@token linkify lives in one place** — `USER_JS` (WKWebView); the
+  grammar is single-sourced from `ida_links._NAME_PATTERN` via
+  `JS_TOKEN_RE`. (The former Python `linkify_html` and QtWebEngine
+  `LINKIFY_JS` copies were deleted with the fallback renderers.)
+  Behavioral quirk: the lint (`unresolved_refs`) trims trailing dots only
+  while unresolvable; USER_JS trims unconditionally (no IDB access at
+  render time).
 - **Markdown parsing is a pragmatic subset, aligned with marp where it
   matters:** fences follow the CommonMark closing-length rule; a `---`
   directly under text is a setext H2, not a slide break. `split_slides`
-  drives both the built-in viewer and the lint's slide numbers, so
-  divergence from marp shows up as off-by-one lint numbers.
+  drives the lint's slide numbers, so divergence from marp shows up as
+  off-by-one lint numbers.
 - **Removed features (owner decisions — do not re-add):**
   - `@!` presenter-follow (auto-jump when a slide becomes visible):
     removed with its toolbar toggle. Legacy `@!name` tokens render as
     dead text and are invisible to the lint — known and accepted.
   - Landing flash (tinting the pseudocode line a `:N` jump arrived at).
+  - Fallback renderers (`renderers.py`: built-in QTextBrowser viewer and
+    the thin QtWebEngine .html view), removed 2026-07 along with
+    `linkify_html`/`LINKIFY_JS`/`make_href`/`name_from_url`. marp/slidev
+    via WKWebView is the only supported path — no degraded rendering.
 - **Accepted behaviors (not bugs):** unmapped raw-hex refs
   (`@0xDEADBEEF`) render as live-looking links and silently fail on
   click — the lint warning is considered sufficient. IDA's native
@@ -164,6 +165,5 @@ to Python via a WKScriptMessageHandler.
 
 ## Outstanding cleanups
 
-- Merging the three linkify implementations' *logic* (the grammar is
-  already single-sourced) — worth doing whenever the injected JS gets
-  its next substantial change.
+- (none currently — the three-copy linkify item resolved itself when the
+  fallback renderers were deleted; only USER_JS remains)

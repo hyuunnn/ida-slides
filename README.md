@@ -46,12 +46,10 @@ can also be opened directly.
 
 ### Platform support
 
-**macOS only** for now — the full pipeline (marp/slidev CLI + embedded
-web view) relies on the native WKWebView. On other platforms the plugin
-still loads with reduced fallbacks: a QtWebEngine view for pre-rendered
-marp `.html` files (if QtWebEngine is importable), or the built-in
-QTextBrowser viewer for `.md` (basic styling, needs the `markdown`
-package).
+**macOS only** — the pipeline (marp/slidev CLI + embedded web view)
+relies on the native WKWebView, and rendering requires the matching CLI
+to be installed. There is no fallback viewer: on other platforms, or
+without marp/slidev, the plugin loads but decks don't render.
 
 ## `@` reference syntax
 
@@ -70,8 +68,7 @@ checking "which function was that again?" mid-talk.
 
 Line jumps (`:N`) and embeds (`[a:b]`) both read live from the IDB, so a
 rename or re-analysis is reflected the next time you save. Unknown names are
-reported in IDA's output window when clicked (the built-in fallback viewer
-dims them instead).
+reported in IDA's output window when clicked.
 
 Every load and save also lints the whole deck against the open IDB: if any
 `@reference` no longer resolves (renamed function, wrong IDB open), the
