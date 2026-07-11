@@ -41,7 +41,10 @@ front matter에 `ida-slides-engine: marp` 또는 `ida-slides-engine: slidev`를 
 - macOS: pyobjc-framework-WebKit (플러그인 매니저가 자동 설치; 수동:
   `pip install --user pyobjc-framework-WebKit`)
 - Windows: WebView2 런타임 (Windows 10/11에 기본 탑재; 로더는 플러그인에
-  포함된 `win/WebView2Loader.dll`)
+  포함된 `win/WebView2Loader.dll` — **x64 전용**. ARM64 IDA를 쓰거나
+  로더가 구버전이 되면 Microsoft.Web.WebView2 NuGet 패키지에서 맞는
+  바이너리로 교체하세요; 정확한 경로와 현재 버전은
+  `win/PROVENANCE.txt` 참고)
 
 CLI는 PATH, nvm/nvm-windows, npm 글로벌 bin, Homebrew, pnpm, scoop 순으로
 탐색합니다. marp-cli로 내보낸 `.html` 파일도 직접 열 수 있습니다.

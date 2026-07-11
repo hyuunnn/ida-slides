@@ -42,7 +42,10 @@ Requirements:
 - macOS: pyobjc-framework-WebKit (installed automatically by the Plugin
   Manager; manual: `pip install --user pyobjc-framework-WebKit`)
 - Windows: the WebView2 Runtime (preinstalled on Windows 10/11; the plugin
-  ships the loader in `win/WebView2Loader.dll`)
+  ships the loader in `win/WebView2Loader.dll` — **x64 only**. On an ARM64
+  IDA, or to update an outdated loader, replace it with the matching
+  binary from the Microsoft.Web.WebView2 NuGet package; see
+  `win/PROVENANCE.txt` for the exact path and recorded version)
 
 CLIs are found via PATH, nvm/nvm-windows, npm's global bin, Homebrew,
 pnpm, or scoop. `.html` files exported by marp-cli can also be opened
