@@ -839,32 +839,36 @@ class MarpWebKitView(QWidget):
             self._pending_restore = restore_hash
             self._arm_render_timeout()
 
-    def _arm_render_timeout(self) -> None:
-        if self._render_timeout is not None:
-            self._render_timeout.stop()
-            self._render_timeout.deleteLater()
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        timer.timeout.connect(self._on_render_timeout)
-        self._render_timeout = timer
-        timer.start(15000)  # marp died mid-render, or the deck is enormous
-
-    def _on_render_timeout(self) -> None:
-        self._render_timeout = None
-        if self._pending_out is None:
-            return
-        self._pending_out = None
-        detail = f": {self._last_marp_err}" if self._last_marp_err else ""
-        self._show_status(f"marp render failed{detail}")
-
-    def _finish_render(self, out: str, restore_hash: str | None = None) -> None:
-        """A render for `out` completed — swap it into the view."""
+    def _clear_render_timeout(self) -> None:
         if self._render_timeout is not None:
             self._render_timeout.stop()
             self._render_timeout.deleteLater()
             self._render_timeout = None
+
+    def _arm_render_timeout(self) -> None:
+        self._clear_render_timeout()
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._on_render_timeout)
+        self._render_timeout = timer
+        timer.start(15000)  # deck is enormous, or marp is wedged
+
+    def _on_render_timeout(self) -> None:
+        # Only a heads-up: keep waiting for the render-complete line (a huge
+        # deck can legitimately take longer). A dead watcher is caught by
+        # _on_marp_exit, so we must NOT drop _pending_out here — clearing it
+        # would make the eventual "=> out" line be ignored, silently losing
+        # a slow-but-successful render.
+        self._clear_render_timeout()
+        if self._pending_out is not None:
+            self._show_status("marp still rendering…")
+
+    def _finish_render(self, out: str, restore_hash: str | None = None) -> None:
+        """A render for `out` completed — swap it into the view."""
+        self._clear_render_timeout()
         self._pending_out = None
         self._pending_restore = None
+        self._last_marp_err = None  # a good render clears stale error detail
         self._show_status("")
         if self._generated and self._generated != out:
             self._remove_generated()
@@ -875,12 +879,10 @@ class MarpWebKitView(QWidget):
         self._load_html(out)
 
     def _stop_marp(self) -> None:
-        if self._render_timeout is not None:
-            self._render_timeout.stop()
-            self._render_timeout.deleteLater()
-            self._render_timeout = None
+        self._clear_render_timeout()
         self._pending_out = None
         self._pending_restore = None
+        self._last_marp_err = None
         self._watch_key = None
         if self._proc is not None:
             # disconnect before killing: the dead watcher's queued signals
