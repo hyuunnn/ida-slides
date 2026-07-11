@@ -442,7 +442,7 @@ class MarpWebKitView(QWidget):
         self._marp: str | None = None
         self._proc: QProcess | None = None
         self.engine_label = "Marp"
-        self._form_caption = "Marp Presenter"
+        self._form_caption = "ida-slides"
 
         # slidev dev-server state
         self._slidev_proc: QProcess | None = None

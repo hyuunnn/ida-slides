@@ -12,7 +12,7 @@ from file_watcher import DebouncedFileWatcher
 
 logger = logging.getLogger(__name__)
 
-_FORM_CAPTION = "Marp Presenter"
+_FORM_CAPTION = "ida-slides"
 
 FILE_FILTER = "*.md;*.markdown;*.html"
 
@@ -224,7 +224,7 @@ class MarpPresenterForm(ida_kernwin.PluginForm):
     # Toolbar handlers
     # ------------------------------------------------------------------
     def _on_open_clicked(self) -> None:
-        path = ida_kernwin.ask_file(False, FILE_FILTER, "Open Marp deck")
+        path = ida_kernwin.ask_file(False, FILE_FILTER, "Open slide deck")
         if path and os.path.isfile(path):
             self._load(path)
 

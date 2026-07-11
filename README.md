@@ -16,7 +16,7 @@ address.
 
 ## Usage
 
-1. `Ctrl+Shift+M` (or View → Open subviews → Marp Presenter: Open Slides…)
+1. `Ctrl+Shift+M` (or View → Open subviews → ida-slides: Open Slides…)
 2. Pick your Markdown deck (`.md`)
 
 On macOS the deck renders in a native WKWebView embedded in the IDA tab — no

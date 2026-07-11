@@ -16,7 +16,7 @@ IDA가 해당 함수/주소로 이동합니다.
 
 ## 사용법
 
-1. `Ctrl+Shift+M` (또는 View → Open subviews → Marp Presenter: Open Slides…)
+1. `Ctrl+Shift+M` (또는 View → Open subviews → ida-slides: Open Slides…)
 2. 마크다운 덱(`.md`) 선택
 
 macOS에서는 덱이 IDA 탭에 임베드된 네이티브 WKWebView로 렌더링됩니다 —
@@ -49,8 +49,6 @@ CLI는 PATH, nvm, Homebrew 순으로 탐색합니다. marp-cli로 내보낸 `.ht
   덱을 같은 방식으로 렌더링합니다.
 - 둘 다 없으면 `.md` 덱은 내장 QTextBrowser 슬라이드 뷰어로 렌더링됩니다
   (Marp 문법 규칙 지원, 기본 스타일만). `markdown` 패키지가 필요합니다.
-
-## 덱 작성
 
 ## `@` 참조 문법
 

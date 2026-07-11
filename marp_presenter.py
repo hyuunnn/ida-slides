@@ -9,7 +9,7 @@ from presenter_form import FILE_FILTER, MarpPresenterForm
 logger = logging.getLogger(__name__)
 
 ACTION_NAME = "marp_presenter:open"
-ACTION_LABEL = "Marp Presenter: Open Slides…"
+ACTION_LABEL = "ida-slides: Open Slides…"
 ACTION_TOOLTIP = "Open a Marp-rendered HTML deck in a dockable IDA tab"
 ACTION_SHORTCUT = "Ctrl+Shift+M"
 MENU_PATH = "View/Open subviews/"
@@ -17,18 +17,18 @@ MENU_PATH = "View/Open subviews/"
 
 class _OpenSlidesHandler(ida_kernwin.action_handler_t):
     def activate(self, ctx) -> int:
-        path = ida_kernwin.ask_file(False, FILE_FILTER, "Open Marp deck")
+        path = ida_kernwin.ask_file(False, FILE_FILTER, "Open slide deck")
         if not path:
             return 0
         if not os.path.isfile(path):
-            ida_kernwin.warning(f"Marp Presenter: file not found:\n{path}")
+            ida_kernwin.warning(f"ida-slides: file not found:\n{path}")
             return 0
         try:
             MarpPresenterForm.show_for_file(path)
         except Exception:
-            logger.exception("Marp Presenter: failed to open %s", path)
+            logger.exception("ida-slides: failed to open %s", path)
             ida_kernwin.warning(
-                "Marp Presenter: failed to open the deck. See Output window for details."
+                "ida-slides: failed to open the deck. See Output window for details."
             )
             return 0
         return 1
@@ -78,19 +78,19 @@ class marp_presenter_plugmod_t(ida_idaapi.plugmod_t):
 
     def run(self, arg):
         # Triggered by "Run plugin" — same path as the menu action.
-        path = ida_kernwin.ask_file(False, FILE_FILTER, "Open Marp deck")
+        path = ida_kernwin.ask_file(False, FILE_FILTER, "Open slide deck")
         if not path or not os.path.isfile(path):
             return
         try:
             MarpPresenterForm.show_for_file(path)
         except Exception:
-            logger.exception("Marp Presenter: failed to open %s", path)
+            logger.exception("ida-slides: failed to open %s", path)
 
     def term(self):
         try:
             MarpPresenterForm.close_singleton()
         except Exception:
-            logger.exception("Marp Presenter: error closing form during term")
+            logger.exception("ida-slides: error closing form during term")
         if self._copy_ref_registered:
             try:
                 import copy_ref
@@ -110,8 +110,8 @@ class marp_presenter_plugmod_t(ida_idaapi.plugmod_t):
 class marp_presenter_plugin_t(ida_idaapi.plugin_t):
     flags = ida_idaapi.PLUGIN_MULTI | ida_idaapi.PLUGIN_FIX
     comment = "Open Marp-rendered HTML slide decks in a dockable IDA tab."
-    help = "Edit → Plugins → Marp Presenter, or Ctrl+Shift+M."
-    wanted_name = "Marp Presenter"
+    help = "Edit → Plugins → ida-slides, or Ctrl+Shift+M."
+    wanted_name = "ida-slides"
     wanted_hotkey = ""
 
     def init(self):

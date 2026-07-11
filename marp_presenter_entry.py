@@ -50,8 +50,8 @@ else:
 
     class _marp_presenter_nop_plugin_t(ida_idaapi.plugin_t):
         flags = ida_idaapi.PLUGIN_HIDE | ida_idaapi.PLUGIN_UNL
-        wanted_name = "Marp Presenter (disabled)"
-        comment = _REASON or "Marp Presenter is disabled in this IDA environment"
+        wanted_name = "ida-slides (disabled)"
+        comment = _REASON or "ida-slides is disabled in this IDA environment"
         help = ""
         wanted_hotkey = ""
 
