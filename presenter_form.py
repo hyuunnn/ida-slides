@@ -146,7 +146,16 @@ class SlidesForm(ida_kernwin.PluginForm):
     # ------------------------------------------------------------------
     def _ensure_renderer(self) -> bool:
         if self._renderer is not None:
-            return True
+            if not getattr(self._renderer, "attach_failed", False):
+                return True
+            # the WKWebView never attached (broken PyObjC install etc.) —
+            # rebuild instead of keeping the dead shell for the form's
+            # lifetime; a fresh attach may succeed
+            self._renderer.cleanup()
+            if self._layout is not None:
+                self._layout.removeWidget(self._renderer)
+            self._renderer.deleteLater()
+            self._renderer = None
         if self._layout is None:
             return False
         if not webkit_view.webkit_available():

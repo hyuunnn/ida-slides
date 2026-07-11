@@ -529,6 +529,9 @@ class DeckWebKitView(QWidget):
         except Exception:
             logger.exception("failed to attach WKWebView")
             self._show_status("WKWebView attach failed — see Output window")
+            # presenter_form checks this to rebuild instead of reusing a
+            # dead shell forever (a fresh attach may succeed)
+            self.attach_failed = True
             return
 
         if self._path:
@@ -572,6 +575,9 @@ class DeckWebKitView(QWidget):
         self._discard_stale_generated(path)
         if engine == "slidev":
             self._stop_marp()
+            # a hash left by an earlier deck's unfinished navigation must
+            # not be replayed into the slidev page by on_load_finished
+            self._pending_hash = None
             self._run_slidev(path, text)
         elif is_md:
             self._stop_slidev()
@@ -708,16 +714,19 @@ class DeckWebKitView(QWidget):
         return out, changed
 
     @staticmethod
-    def _rewrite_prepared(prepared: str) -> None:
+    def _rewrite_prepared(prepared: str) -> bool:
         """Rewrite the prepared md with its own content, so the `marp -w`
-        watcher sees a change and re-renders even though nothing differs."""
+        watcher sees a change and re-renders even though nothing differs.
+        Returns False when the rewrite failed (no render will come)."""
         try:
             with open(prepared, encoding="utf-8", errors="replace") as f:
                 text = f.read()
             with open(prepared, "w", encoding="utf-8") as f:
                 f.write(text)
+            return True
         except OSError:
             logger.exception("cannot rewrite prepared deck %s", prepared)
+            return False
 
     # ------------------------------------------------------------------
     # process helpers
@@ -915,8 +924,14 @@ class DeckWebKitView(QWidget):
                 return
             # the output vanished (deleted externally) and the unchanged
             # input won't be rewritten, so the reused watcher would never
-            # re-render — rewrite the prepared md to trigger one
-            self._rewrite_prepared(prepared)
+            # re-render — rewrite the prepared md to trigger one. If even
+            # that fails, don't arm a wait no render can satisfy (later
+            # unchanged saves skip this branch via the in-flight guard)
+            if not self._rewrite_prepared(prepared):
+                self._show_status(
+                    "cannot rewrite prepared deck — see Output window"
+                )
+                return
         self._pending_out = out
         self._pending_restore = restore_hash
         self._arm_render_timeout()
@@ -1057,20 +1072,32 @@ class DeckWebKitView(QWidget):
     def _discard_stale_generated(self, path: str) -> None:
         """Drop generated siblings left over from a previously loaded deck.
 
-        Runs at load() time, before the new deck's pipeline starts: the old
-        watcher is about to be replaced, so its files can go, while the new
-        deck's own siblings (`keep`) must survive — they are (or become)
-        the input of the live watcher.
+        Runs at load() time. `keep` protects the new deck's own siblings
+        (they are, or become, the live watcher's input) and `path` itself —
+        the user may open a generated html directly, and deleting the file
+        about to be loaded would blank the view.
         """
-        keep = (self._sibling(path, "md"), self._sibling(path, "html"))
-        for attr in ("_generated", "_generated_md"):
-            p = getattr(self, attr)
-            if p and p not in keep:
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
-                setattr(self, attr, None)
+        keep = (path, self._sibling(path, "md"), self._sibling(path, "html"))
+        stale = [
+            (attr, p)
+            for attr in ("_generated", "_generated_md")
+            if (p := getattr(self, attr)) and p not in keep
+        ]
+        if not stale:
+            return
+        # stale files mean a deck switch, so the old pipelines can never be
+        # reused (_watch_key / _slidev_md differ) — stop them BEFORE the
+        # unlink: deleting a live watcher's input fires its still-connected
+        # handlers mid-load (the decompile in _prepare_md can pump the
+        # event loop), flashing stale errors over the new deck
+        self._stop_marp()
+        self._stop_slidev()
+        for attr, p in stale:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+            setattr(self, attr, None)
 
     # ------------------------------------------------------------------
     # WKWebView loading
