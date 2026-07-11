@@ -26,7 +26,7 @@ if _REPO not in sys.path:
 import deck_preprocess
 import ida_links
 import marp_markdown
-import webkit_view
+import deck_view
 
 
 class _Runner:
@@ -82,7 +82,7 @@ def test_token_regex():
 
 
 def test_js_token_re_substituted():
-    truthy("__IDA_TOKEN_RE__" not in webkit_view.USER_JS, "USER_JS")
+    truthy("__IDA_TOKEN_RE__" not in deck_view.USER_JS, "USER_JS")
     truthy(ida_links.JS_TOKEN_RE.startswith("/@("), ida_links.JS_TOKEN_RE)
 
 
@@ -139,7 +139,7 @@ def test_detect_engine_bom():
     try:
         with os.fdopen(fd, "wb") as f:
             f.write("﻿---\nida-slides-engine: slidev\n---\n\n# t\n".encode())
-        eq(webkit_view.detect_engine(path), "slidev")
+        eq(deck_view.detect_engine(path), "slidev")
     finally:
         os.unlink(path)
 
@@ -151,11 +151,11 @@ def test_bespoke_restore_js():
 
 
 def test_yaml_scalar():
-    eq(webkit_view._yaml_scalar("false # opt out"), "false")
-    eq(webkit_view._yaml_scalar('"false"'), "false")
-    eq(webkit_view._yaml_scalar("'false'"), "false")
-    eq(webkit_view._yaml_scalar("'a#b'"), "a#b")   # '#' inside quotes kept
-    eq(webkit_view._yaml_scalar("true"), "true")
+    eq(deck_view._yaml_scalar("false # opt out"), "false")
+    eq(deck_view._yaml_scalar('"false"'), "false")
+    eq(deck_view._yaml_scalar("'false'"), "false")
+    eq(deck_view._yaml_scalar("'a#b'"), "a#b")   # '#' inside quotes kept
+    eq(deck_view._yaml_scalar("true"), "true")
 
 
 def test_node_version_key():
@@ -163,11 +163,54 @@ def test_node_version_key():
     old = "/Users/u/.nvm/versions/node/v9.11.0/bin/marp"
     new = "/Users/u/.nvm/versions/node/v22.1.0/bin/marp"
     truthy(
-        webkit_view._node_version_key(new) > webkit_view._node_version_key(old),
+        deck_view._node_version_key(new) > deck_view._node_version_key(old),
         "v22 outranks v9",
     )
-    eq(webkit_view._node_version_key(new), (22, 1, 0))
-    eq(webkit_view._node_version_key("/opt/homebrew/bin/marp"), ())
+    eq(deck_view._node_version_key(new), (22, 1, 0))
+    eq(deck_view._node_version_key("/opt/homebrew/bin/marp"), ())
+    # nvm-windows layout uses backslashes
+    eq(
+        deck_view._node_version_key(r"C:\Users\u\AppData\Roaming\nvm\v22.1.0\marp.cmd"),
+        (22, 1, 0),
+    )
+
+
+def test_spawn_spec():
+    if not deck_view._IS_WIN:
+        # POSIX: every tool path passes through untouched
+        eq(deck_view._spawn_spec("/usr/local/bin/marp"),
+           ("/usr/local/bin/marp", []))
+        return
+    import shutil
+
+    # .exe runs directly
+    eq(deck_view._spawn_spec(r"C:\tools\marp.exe"), (r"C:\tools\marp.exe", []))
+    with tempfile.TemporaryDirectory() as d:
+        # an npm .cmd shim WITHOUT its node_modules entry falls back to
+        # the shim itself (Qt runs .cmd via cmd /c)
+        shim = os.path.join(d, "marp.cmd")
+        open(shim, "w").close()
+        eq(deck_view._spawn_spec(shim), (shim, []))
+        # with the real JS entry present, node runs it directly so
+        # QProcess.kill() reaps the renderer instead of just cmd.exe
+        entry = os.path.join(
+            d, "node_modules", "@marp-team", "marp-cli", "marp-cli.js"
+        )
+        os.makedirs(os.path.dirname(entry))
+        open(entry, "w").close()
+        program, pre = deck_view._spawn_spec(shim)
+        if shutil.which("node"):
+            truthy(program.lower().endswith("node.exe"), program)
+            eq(pre, [entry])
+        else:
+            eq((program, pre), (shim, []))
+        # a .ps1 launcher (QProcess can't start those) reroutes to its
+        # .cmd twin
+        ps1 = os.path.join(d, "slidev.ps1")
+        cmd_twin = os.path.join(d, "slidev.cmd")
+        open(ps1, "w").close()
+        open(cmd_twin, "w").close()
+        eq(deck_view._spawn_spec(ps1), (cmd_twin, []))
 
 
 def _detect(front_matter):
@@ -175,7 +218,7 @@ def _detect(front_matter):
     try:
         with os.fdopen(fd, "w") as f:
             f.write(f"---\n{front_matter}\n---\n\n# t\n")
-        return webkit_view.detect_engine(path)
+        return deck_view.detect_engine(path)
     finally:
         os.unlink(path)
 
@@ -188,7 +231,7 @@ def test_detect_engine_marp():
 
 def test_detect_engine_slidev():
     # marp:false should defer to slidev — only assertable when slidev exists
-    if not webkit_view.find_slidev():
+    if not deck_view.find_slidev():
         raise _Skip("slidev CLI not installed")
     eq(_detect("marp: false # opt out\ntransition: slide"), "slidev")
     eq(_detect("marp: false\ntransition: slide"), "slidev")
@@ -218,13 +261,13 @@ def test_output_is_current():
             f.write("y")
         os.utime(prepared, (1000, 1000))
         os.utime(out, (2000, 2000))
-        truthy(webkit_view._output_is_current(out, prepared), "newer output")
+        truthy(deck_view._output_is_current(out, prepared), "newer output")
         os.utime(out, (500, 500))
-        truthy(not webkit_view._output_is_current(out, prepared),
+        truthy(not deck_view._output_is_current(out, prepared),
                "stale output must be skipped")
         # unknowable cases resolve True (caller's isfile check owns them)
-        truthy(webkit_view._output_is_current(out, None), "no prepared path")
-        truthy(webkit_view._output_is_current(os.path.join(d, "gone"), prepared),
+        truthy(deck_view._output_is_current(out, None), "no prepared path")
+        truthy(deck_view._output_is_current(os.path.join(d, "gone"), prepared),
                "missing output defers to _finish_render")
     finally:
         for p in (prepared, out):
@@ -346,6 +389,7 @@ ALL = [
     ("bespoke_restore_js", test_bespoke_restore_js),
     ("yaml_scalar", test_yaml_scalar),
     ("node_version_key", test_node_version_key),
+    ("spawn_spec", test_spawn_spec),
     ("detect_engine_marp", test_detect_engine_marp),
     ("detect_engine_slidev", test_detect_engine_slidev),
     ("embed_regex_and_fences", test_embed_regex_and_fences),

@@ -1,8 +1,8 @@
 """Turn `@name` / `@0xADDR` tokens into clickable links that jump IDA views.
 
 The token grammar lives here; the actual linkification happens in
-`webkit_view.USER_JS` (a WKUserScript over the rendered DOM), which gets
-the grammar via `JS_TOKEN_RE`.
+`deck_view.USER_JS` (injected into the rendered DOM on both platforms),
+which gets the grammar via `JS_TOKEN_RE`.
 """
 
 import logging
@@ -17,7 +17,7 @@ _NAME_PATTERN = r"0x[0-9A-Fa-f]+|[A-Za-z_?$.][\w?$@.]*"
 TOKEN_RE = re.compile(rf"(?<![A-Za-z0-9_@])@({_NAME_PATTERN})(?::(\d+))?")
 
 # the same grammar as a JS regex literal — single source for the injected
-# linkifier (webkit_view.USER_JS); the JS side does the email-@ guard as a
+# linkifier (deck_view.USER_JS); the JS side does the email-@ guard as a
 # prev-char check instead of a lookbehind
 JS_TOKEN_RE = rf"/@({_NAME_PATTERN})(?::(\d+))?/g"
 

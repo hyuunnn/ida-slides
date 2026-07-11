@@ -44,11 +44,20 @@ rendering into an external browser window were considered and rejected.
 ```
 ida_slides_entry.py      plugin entry (env gate) → ida_slides.py
 ida_slides.py            action/menu registration (Ctrl+Shift+M)
-presenter_form.py        dockable PluginForm: toolbar, webkit renderer,
-                         file watcher wiring, lint display
-webkit_view.py           the one renderer: native WKWebView via PyObjC,
-                         marp/slidev CLI pipeline, injected USER_JS,
-                         JS↔Python message bridge
+presenter_form.py        dockable PluginForm: toolbar, renderer via
+                         deck_view dispatch, file watcher wiring, lint
+deck_view.py             platform-neutral core: DeckViewBase (marp -w /
+                         slidev pipelines, preprocessing, status),
+                         injected USER_JS, engine detection, tool
+                         discovery, dispatch_page_message, and the
+                         create_renderer()/availability_error() dispatch
+webkit_view.py           macOS renderer: native WKWebView via PyObjC —
+                         implements DeckViewBase's _native_* hooks
+webview2_view.py         Windows renderer: native WebView2 attached to
+                         the container HWND — same hook surface
+webview2_com.py          ctypes-only COM layer for WebView2 (no pip
+                         deps); IIDs/vtable indices frozen from the SDK
+win/WebView2Loader.dll   vendored x64 loader (Microsoft.Web.WebView2)
 ida_links.py             @token grammar (TOKEN_RE / JS_TOKEN_RE),
                          resolution, jumps
 deck_preprocess.py       embed expansion, hover-preview text, deck lint
@@ -60,28 +69,45 @@ copy_ref.py              Copy @reference context-menu action
 file_watcher.py          debounced, rename-surviving file watcher
 ```
 
-Render pipeline (macOS/.md): deck.md → `deck_preprocess.expand_embeds`
+Render pipeline (.md): deck.md → `deck_preprocess.expand_embeds`
 (decompiles `@name[a:b]` tokens) → hidden `.name.ida-slides.md` → marp
-CLI (QProcess) → `.name.ida-slides.html` → WKWebView. Slidev decks run a
-local dev server instead and rely on Vite HMR. `USER_JS` (a WKUserScript)
-linkifies `@tokens` in the rendered DOM and posts click/preview messages
-to Python via a WKScriptMessageHandler.
+CLI (QProcess) → `.name.ida-slides.html` → native webview (WKWebView on
+macOS, WebView2 on Windows). Slidev decks run a local dev server instead
+and rely on Vite HMR. `USER_JS` (injected per platform: WKUserScript /
+AddScriptToExecuteOnDocumentCreated) linkifies `@tokens` in the rendered
+DOM and posts click/preview messages to Python (WKScriptMessageHandler /
+chrome.webview.postMessage → WebMessageReceived); both bridges land in
+`deck_view.dispatch_page_message`.
 
 ## Design decisions & tradeoffs
 
-- **WKWebView over QtWebEngine (macOS).** IDA's bundled PySide6 has no
-  QtWebEngine, and pip's QtWebEngine wheels can ABI-clash with IDA's
-  bundled Qt. The system WebKit is free, native, and GPU-accelerated.
-  Tradeoff: the plugin is **macOS-only** (owner's explicit call — don't
-  invest in cross-platform work unless asked). There are NO fallback
-  renderers: without WKWebView or the deck's engine CLI (marp/slidev),
-  decks simply don't render (a warning / status message says why).
+- **Native OS webview over QtWebEngine.** IDA's bundled PySide6 has no
+  QtWebEngine on any platform, and pip Qt wheels can ABI-clash with
+  IDA's bundled Qt — so the plugin never touches the Qt web stack. macOS
+  uses the system WKWebView (PyObjC); Windows uses the system WebView2
+  runtime driven over raw COM with stdlib ctypes (`webview2_com.py`, no
+  pip deps; Windows support added 2026-07 by owner request, revising the
+  earlier macOS-only call). The split lives in `deck_view.DeckViewBase`
+  (all pipeline logic) + per-platform `_native_*` hooks. There are NO
+  fallback renderers: without the platform webview or the deck's engine
+  CLI (marp/slidev), decks simply don't render (a warning / status
+  message says why).
 - **PyObjC crash safety (documented in webkit_view.py header).** A
   Python exception escaping a PyObjC delegate aborts IDA, and PyObjC
   cannot call WebKit completion-handler *blocks* at all. Therefore no
   delegate method that receives a block is ever implemented — click
   routing uses WKUserScript + postMessage instead of navigation
   delegates. Keep it that way.
+- **WebView2 COM safety (documented in webview2_com.py header).** vtable
+  slot indices and IIDs are hardcoded from the official SDK header —
+  they are frozen ABI; never guess or reorder them. ctypes COM callbacks
+  must never raise (each is wrapped), and IDA work is deferred out of
+  callback frames via `QTimer.singleShot(0)` exactly like the ObjC rule.
+  The attach is a two-step async chain (environment → controller); the
+  environment is cached process-wide, the controller/webview are
+  per-view. `npm` launcher shims (`marp.cmd`) are bypassed in favor of
+  `node <real .js entry>` (`_spawn_spec`) so killing the QProcess reaps
+  the actual renderer instead of orphaning a `marp -w` under cmd.exe.
 - **Save-time batch rendering, not incremental.** Every save re-runs
   the preprocess; marp runs as a persistent `-w` watcher (one per deck,
   stopped on cleanup / file switch / engine switch) that re-renders when
@@ -118,10 +144,13 @@ to Python via a WKScriptMessageHandler.
   pointers can hard-crash IDA (not catchable in Python). Re-resolve via
   `find_widget(title)` + `get_widget_vdui()` and compare `cfunc.entry_ea`
   before touching the viewer (see `_jump_to_pseudocode_line`).
-- **@token linkify lives in one place** — `USER_JS` (WKWebView); the
-  grammar is single-sourced from `ida_links._NAME_PATTERN` via
-  `JS_TOKEN_RE`. (The former Python `linkify_html` and QtWebEngine
-  `LINKIFY_JS` copies were deleted with the fallback renderers.)
+- **@token linkify lives in one place** — `deck_view.USER_JS` (shared by
+  both platform webviews; a `post()` shim picks chrome.webview vs
+  webkit.messageHandlers at runtime, and startup is gated on DOM
+  readiness because WebView2 injects at document-created). The grammar
+  is single-sourced from `ida_links._NAME_PATTERN` via `JS_TOKEN_RE`.
+  (The former Python `linkify_html` and QtWebEngine `LINKIFY_JS` copies
+  were deleted with the fallback renderers.)
   Behavioral quirk: the lint (`unresolved_refs`) trims trailing dots only
   while unresolvable; USER_JS trims unconditionally (no IDB access at
   render time).
@@ -151,8 +180,24 @@ to Python via a WKScriptMessageHandler.
 
 ## Working on the code
 
-- The repo is symlinked at `~/.idapro/plugins/ida-slides`; a running IDA
-  loads this working tree directly.
+- The repo lives in the IDA plugins dir (macOS: symlink at
+  `~/.idapro/plugins/ida-slides`; Windows: directly at
+  `%APPDATA%\Hex-Rays\IDA Pro\plugins\ida-slides`); a running IDA loads
+  this working tree directly.
+- The Windows renderer is testable OUTSIDE IDA:
+  `python tests\test_webview2_standalone.py` (part 1: COM layer in a bare
+  Win32 window; part 2: DeckWebView2View + real marp pipeline under Qt).
+  Run it BEFORE touching vtable/COM code — a wrong slot index fails there
+  cleanly instead of crashing IDA. It uses private temp user-data folders
+  on purpose: a WebView2 user-data folder is owned by one host process's
+  browser instance, and a second process attaching to it gets
+  ERROR_INVALID_STATE (0x8007139f) — or, observed empirically, the
+  controller callback simply never arrives. The view therefore runs an
+  8s watchdog per attach attempt and retries once with a per-pid folder
+  (swept on later attaches); attempts carry a generation counter so a
+  stalled attempt completing late is dropped instead of racing the
+  retry. Never pip-install/upgrade PySide6 in IDA's Python to test —
+  IDA loads it.
 - A live IDA is usually reachable via the `ida-pro-mcp` MCP server
   (`py_eval`) — verify UI/focus/crash behavior empirically there rather
   than reasoning about it. Reload flow: `importlib.reload` the changed

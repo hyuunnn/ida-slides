@@ -19,8 +19,9 @@ IDA가 해당 함수/주소로 이동합니다.
 1. `Ctrl+Shift+M` (또는 View → Open subviews → ida-slides: Open Slides…)
 2. 마크다운 덱(`.md`) 선택
 
-macOS에서는 덱이 IDA 탭에 임베드된 네이티브 WKWebView로 렌더링됩니다 —
-QtWebEngine이 필요 없습니다. 엔진은 덱마다 자동 선택됩니다:
+덱은 IDA 탭에 임베드된 네이티브 웹뷰로 렌더링됩니다 — macOS는 WKWebView,
+Windows는 WebView2 — QtWebEngine이 필요 없습니다. 엔진은 덱마다 자동
+선택됩니다:
 
 - **Marp** (기본): 저장할 때마다 `marp` CLI가 HTML로 변환하고, 현재 슬라이드를
   유지한 채 뷰가 리로드됩니다. Marp 테마·배경·페이지 번호 완전 지원.
@@ -37,18 +38,21 @@ front matter에 `ida-slides-engine: marp` 또는 `ida-slides-engine: slidev`를 
 - Marp: `npm i -g @marp-team/marp-cli`
 - Slidev: `npm i -g @slidev/cli` (+ 덱이 쓰는 테마, 예:
   `@slidev/theme-default`)
-- pyobjc-framework-WebKit (플러그인 매니저가 자동 설치; 수동:
+- macOS: pyobjc-framework-WebKit (플러그인 매니저가 자동 설치; 수동:
   `pip install --user pyobjc-framework-WebKit`)
+- Windows: WebView2 런타임 (Windows 10/11에 기본 탑재; 로더는 플러그인에
+  포함된 `win/WebView2Loader.dll`)
 
-CLI는 PATH, nvm, Homebrew 순으로 탐색합니다. marp-cli로 내보낸 `.html` 파일도
-직접 열 수 있습니다.
+CLI는 PATH, nvm/nvm-windows, npm 글로벌 bin, Homebrew, pnpm, scoop 순으로
+탐색합니다. marp-cli로 내보낸 `.html` 파일도 직접 열 수 있습니다.
 
 ### 플랫폼 지원
 
-**macOS 전용**입니다 — 파이프라인(marp/slidev CLI + 임베디드 웹뷰)이
-네이티브 WKWebView에 의존하며, 렌더링에는 해당 엔진의 CLI 설치가
-필요합니다. 폴백 뷰어는 없습니다: 다른 플랫폼이거나 marp/slidev가 없으면
-플러그인은 로드되지만 덱은 렌더되지 않습니다.
+**macOS와 Windows**를 지원합니다 — 덱은 각 플랫폼의 네이티브 웹뷰(macOS는
+PyObjC 기반 WKWebView, Windows는 COM 기반 WebView2)로 렌더링되며,
+렌더링에는 해당 엔진의 CLI 설치가 필요합니다. 폴백 뷰어는 없습니다: 다른
+플랫폼이거나 marp/slidev가 없으면 플러그인은 로드되지만 덱은 렌더되지
+않습니다.
 
 ## `@` 참조 문법
 
@@ -102,15 +106,21 @@ Slidev 개발 서버는 덱을 닫거나 바꾸면 종료됩니다.
 이 디렉토리를 IDA 플러그인 폴더에 심링크하거나 복사하세요:
 
 ```sh
+# macOS
 ln -s "$(pwd)" ~/.idapro/plugins/ida-slides
+```
+
+```powershell
+# Windows
+New-Item -ItemType Junction -Path "$env:APPDATA\Hex-Rays\IDA Pro\plugins\ida-slides" -Target (Get-Location)
 ```
 
 IDA 9.2+ (GUI) 필요.
 
 ## 테스트
 
-플러그인이 IDA/Qt/WebKit에 묶여 있어 테스트는 `pytest`가 아니라 IDA 안에서
-실행합니다. 아무 IDB나 연 뒤 IDA Python 콘솔에서:
+플러그인이 IDA/Qt/네이티브 웹뷰에 묶여 있어 테스트는 `pytest`가 아니라 IDA
+안에서 실행합니다. 아무 IDB나 연 뒤 IDA Python 콘솔에서:
 
 ```python
 exec(open("<repo>/tests/test_in_ida.py", encoding="utf-8").read())
@@ -119,6 +129,17 @@ exec(open("<repo>/tests/test_in_ida.py", encoding="utf-8").read())
 순수 로직 검사(토큰 문법, 슬라이드 분할, front matter 파싱, 임베드·린트
 처리)는 항상 실행되고, DB 의존 검사(이름 해석, 디컴파일, 라이브 린트)는
 열려 있는 IDB에서 함수를 하나 골라 실행하며 IDB가 없으면 건너뜁니다.
+
+Windows에서는 렌더러 자체를 IDA **밖에서** 추가로 테스트할 수 있습니다
+(COM 레이어와 marp 파이프라인은 IDB가 필요 없습니다):
+
+```powershell
+python tests\test_webview2_standalone.py
+```
+
+`webview2_com.py`의 vtable/COM 코드를 건드리기 전에 반드시 이걸 먼저
+돌리세요 — 슬롯 인덱스가 틀리면 IDA 안에서 크래시로 나타나는 대신 여기서
+깔끔한 실패로 잡힙니다. ida-slides가 열린 IDA가 떠 있어도 안전하게 실행됩니다.
 
 ## 구현 노트 (IDA 9.3)
 
@@ -133,3 +154,7 @@ exec(open("<repo>/tests/test_in_ida.py", encoding="utf-8").read())
   하나도 구현하지 않습니다.
 - ObjC 콜백에서 시작되는 IDA API 작업은 전부 `QTimer.singleShot(0, …)`으로
   지연 실행합니다.
+- Windows에서는 WebView2를 표준 라이브러리 ctypes만으로 COM 직접 구동합니다
+  (`webview2_com.py`) — pip 의존성이 없고 IDA에 번들된 Qt ABI를 전혀 건드리지
+  않습니다. 인터페이스 IID와 vtable 슬롯 인덱스는 공식 SDK 헤더에서 가져온
+  고정 ABI입니다. COM 콜백에도 동일한 지연 실행 규칙이 적용됩니다.

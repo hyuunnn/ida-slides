@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import QLabel, QToolBar, QVBoxLayout, QWidget
 
-import webkit_view
+import deck_view
 from file_watcher import DebouncedFileWatcher
 
 logger = logging.getLogger(__name__)
@@ -21,9 +21,10 @@ _MD_EXTS = (".md", ".markdown")
 class SlidesForm(ida_kernwin.PluginForm):
     """Dockable IDA tab that renders a Marp/Slidev deck.
 
-    Rendering is native WKWebView only (macOS + PyObjC): .md decks go
-    through the marp CLI or a slidev dev server, .html files (marp-cli
-    output) load directly. There is no fallback viewer — without WKWebView
+    Rendering is a native platform webview only — WKWebView on macOS
+    (PyObjC), WebView2 on Windows (ctypes COM): .md decks go through the
+    marp CLI or a slidev dev server, .html files (marp-cli output) load
+    directly. There is no fallback viewer — without the platform webview
     or the engine's CLI the deck simply doesn't render.
 
     Class-level singleton: a second `show_for_file()` swaps the file in the
@@ -148,9 +149,10 @@ class SlidesForm(ida_kernwin.PluginForm):
         if self._renderer is not None:
             if not getattr(self._renderer, "attach_failed", False):
                 return True
-            # the WKWebView never attached (broken PyObjC install etc.) —
-            # rebuild instead of keeping the dead shell for the form's
-            # lifetime; a fresh attach may succeed
+            # the native webview never attached (broken PyObjC install,
+            # missing WebView2 runtime, ...) — rebuild instead of keeping
+            # the dead shell for the form's lifetime; a fresh attach may
+            # succeed
             self._renderer.cleanup()
             if self._layout is not None:
                 self._layout.removeWidget(self._renderer)
@@ -158,15 +160,12 @@ class SlidesForm(ida_kernwin.PluginForm):
             self._renderer = None
         if self._layout is None:
             return False
-        if not webkit_view.webkit_available():
-            ida_kernwin.warning(
-                "ida-slides: rendering requires macOS with PyObjC "
-                "(native WKWebView).\n\n"
-                "Install with: pip install --user pyobjc-framework-WebKit"
-            )
+        err = deck_view.availability_error()
+        if err is not None:
+            ida_kernwin.warning(err)
             return False
 
-        new_renderer = webkit_view.DeckWebKitView()
+        new_renderer = deck_view.create_renderer()
         new_renderer._form_caption = _FORM_CAPTION
         self._renderer = new_renderer
         self._layout.addWidget(new_renderer, 1)
@@ -190,7 +189,7 @@ class SlidesForm(ida_kernwin.PluginForm):
             # stale engine label or clear the previous deck's lint warning
             # for a deck that was never parsed
             return
-        label = f"{self._renderer.engine_label}/WebKit"
+        label = f"{self._renderer.engine_label}/{self._renderer.renderer_label}"
         self._status_base = f"{os.path.basename(path)}  [{label}]"
         self._refresh_status()
 

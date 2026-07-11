@@ -19,8 +19,9 @@ address.
 1. `Ctrl+Shift+M` (or View → Open subviews → ida-slides: Open Slides…)
 2. Pick your Markdown deck (`.md`)
 
-On macOS the deck renders in a native WKWebView embedded in the IDA tab — no
-QtWebEngine required. The engine is picked per deck:
+The deck renders in a native webview embedded in the IDA tab — WKWebView on
+macOS, WebView2 on Windows; no QtWebEngine required. The engine is picked
+per deck:
 
 - **Marp** (default): the `marp` CLI converts to HTML on every save and the
   view reloads in place, keeping the current slide. Full Marp themes,
@@ -38,18 +39,22 @@ Requirements:
 - Marp: `npm i -g @marp-team/marp-cli`
 - Slidev: `npm i -g @slidev/cli` (+ the theme your deck uses, e.g.
   `@slidev/theme-default`)
-- pyobjc-framework-WebKit (installed automatically by the Plugin Manager;
-  manual: `pip install --user pyobjc-framework-WebKit`)
+- macOS: pyobjc-framework-WebKit (installed automatically by the Plugin
+  Manager; manual: `pip install --user pyobjc-framework-WebKit`)
+- Windows: the WebView2 Runtime (preinstalled on Windows 10/11; the plugin
+  ships the loader in `win/WebView2Loader.dll`)
 
-CLIs are found via PATH, nvm, or Homebrew. `.html` files exported by marp-cli
-can also be opened directly.
+CLIs are found via PATH, nvm/nvm-windows, npm's global bin, Homebrew,
+pnpm, or scoop. `.html` files exported by marp-cli can also be opened
+directly.
 
 ### Platform support
 
-**macOS only** — the pipeline (marp/slidev CLI + embedded web view)
-relies on the native WKWebView, and rendering requires the matching CLI
-to be installed. There is no fallback viewer: on other platforms, or
-without marp/slidev, the plugin loads but decks don't render.
+**macOS and Windows** — the deck is rendered by the platform's native
+webview (WKWebView via PyObjC on macOS, WebView2 via COM on Windows), and
+rendering requires the deck engine's CLI to be installed. There is no
+fallback viewer: on other platforms, or without marp/slidev, the plugin
+loads but decks don't render.
 
 ## `@` reference syntax
 
@@ -106,15 +111,21 @@ Slidev dev server is stopped when the deck is closed or swapped.
 Symlink or copy this directory into your IDA plugins folder, e.g.:
 
 ```sh
+# macOS
 ln -s "$(pwd)" ~/.idapro/plugins/ida-slides
+```
+
+```powershell
+# Windows
+New-Item -ItemType Junction -Path "$env:APPDATA\Hex-Rays\IDA Pro\plugins\ida-slides" -Target (Get-Location)
 ```
 
 Requires IDA 9.2+ (GUI).
 
 ## Tests
 
-The plugin is tied to IDA/Qt/WebKit, so tests run inside IDA rather than
-under a bare `pytest`. Open any IDB, then in the IDA Python console:
+The plugin is tied to IDA/Qt/the native webview, so tests run inside IDA
+rather than under a bare `pytest`. Open any IDB, then in the IDA Python console:
 
 ```python
 exec(open("<repo>/tests/test_in_ida.py", encoding="utf-8").read())
@@ -124,6 +135,17 @@ Pure-logic checks (token grammar, slide splitting, front-matter parsing,
 embed/lint handling) always run; database-dependent checks (name
 resolution, decompilation, live lint) pick a function from whatever IDB is
 open and skip cleanly if none is loaded.
+
+On Windows the renderer itself can additionally be tested **outside** IDA
+(the COM layer and the marp pipeline don't need an IDB):
+
+```powershell
+python tests\test_webview2_standalone.py
+```
+
+Run this before touching any vtable/COM code in `webview2_com.py` — a
+wrong slot index shows up here as a clean failure instead of a crash
+inside IDA. It is safe to run while an IDA with ida-slides is open.
 
 ## Implementation notes (IDA 9.3)
 
@@ -138,3 +160,8 @@ open and skip cleanly if none is loaded.
   is implemented.
 - All IDA API work triggered from ObjC callbacks is deferred via
   `QTimer.singleShot(0, …)`.
+- On Windows, WebView2 is driven directly over COM with stdlib ctypes
+  (`webview2_com.py`) — no pip dependency and no contact with IDA's
+  bundled Qt ABI. Interface IIDs and vtable slot indices are taken from
+  the official SDK header and are frozen ABI. The same defer-everything
+  rule applies to COM callbacks.

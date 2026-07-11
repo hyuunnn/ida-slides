@@ -26,8 +26,9 @@ def _disable_reason() -> str | None:
     except ImportError as exc:
         return f"ida-slides: PySide6 not importable ({exc})"
 
-    # WKWebView (macOS + PyObjC) and the marp/slidev CLIs are checked when
-    # a deck is actually opened, so the plugin itself always loads.
+    # the native webview (WKWebView on macOS, WebView2 on Windows) and the
+    # marp/slidev CLIs are checked when a deck is actually opened, so the
+    # plugin itself always loads.
     return None
 
 
