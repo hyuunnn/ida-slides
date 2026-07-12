@@ -248,9 +248,22 @@ USER_JS = r"""
     }
 
     window.__idaSlidesPreview = function (id, key, text) {
-        previewCache[key] = text;
+        // only cache real pseudocode: an empty reply (Python-side error) or
+        // a '⚠ name: ...' message is transient — caching those would keep a
+        // token's tooltip dead, or keep showing "no such name", for the rest
+        // of the page's life even after the IDB gains the name
+        if (text && text.charAt(0) !== '⚠')
+            previewCache[key] = text;
         if (hoverEl && hoverEl.__idaReq === id && text)
             showTip(hoverEl, text);
+    };
+
+    // Marp reloads the page on every save, which resets this cache; Slidev
+    // patches in place via HMR and never navigates, so previews would stay
+    // stale after an IDB rename. Python calls this whenever the deck is
+    // re-prepared (i.e. on save).
+    window.__idaSlidesClearPreviews = function () {
+        previewCache = {};
     };
 
     document.addEventListener('mouseover', function (ev) {
@@ -790,6 +803,12 @@ class DeckViewBase(QWidget):
             # regenerate the preprocessed deck; Slidev's HMR picks it up
             if self._path:
                 self._prepare_md(self._path)
+            # HMR never navigates, so the page's hover-preview cache would
+            # survive an IDB rename that the embeds themselves pick up
+            self._native_eval_js(
+                "window.__idaSlidesClearPreviews && "
+                "window.__idaSlidesClearPreviews();"
+            )
             return
         self.reload()
 
