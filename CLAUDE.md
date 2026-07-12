@@ -92,6 +92,17 @@ chrome.webview.postMessage → WebMessageReceived); both bridges land in
   fallback renderers: without the platform webview or the deck's engine
   CLI (marp/slidev), decks simply don't render (a warning / status
   message says why).
+- **The macOS webview is embedded through Qt, never poked into winId().**
+  `QWindow.fromWinId(<WKWebView NSView>)` + `QWidget.createWindowContainer`
+  — so Qt owns the native window's geometry and compositing. The obvious
+  alternative (grab `container.winId()`'s NSView and `addSubview_` the
+  WKWebView into it) *renders* fine but never reaches the screen inside
+  IDA's dock: the pane shows stale pixels of whatever was behind it
+  (black boxes, other widgets' text) while a WKWebView snapshot is
+  pixel-perfect. Nothing programmatic reconnects it — frame nudges, Qt
+  resizes, splitter and main-window resizes, delayed attach all fail;
+  only a manual dock drag does, once, permanently. Don't "simplify" this
+  back to addSubview_ (2026-07).
 - **PyObjC crash safety (documented in webkit_view.py header).** A
   Python exception escaping a PyObjC delegate aborts IDA, and PyObjC
   cannot call WebKit completion-handler *blocks* at all. Therefore no

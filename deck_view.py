@@ -631,7 +631,6 @@ class DeckViewBase(QWidget):
         self._status.setVisible(False)
 
         self._container = QWidget(self)
-        self._container.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

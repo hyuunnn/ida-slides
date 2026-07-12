@@ -1,11 +1,19 @@
 """True-Marp slide renderer for macOS: embeds a native WKWebView inside the
 IDA dock widget via PyObjC.
 
-IDA's bundled PySide6 has no QtWebEngine, so this renderer attaches a native
-WKWebView as a subview of the Qt widget's NSView (winId). The deck pipeline
-(marp CLI / slidev dev server, preprocessing, status handling) lives in
-deck_view.DeckViewBase; this module implements only the WKWebView-specific
-hook surface.
+IDA's bundled PySide6 has no QtWebEngine, so this renderer embeds a native
+WKWebView. The deck pipeline (marp CLI / slidev dev server, preprocessing,
+status handling) lives in deck_view.DeckViewBase; this module implements only
+the WKWebView-specific hook surface.
+
+EMBEDDING: hand the WKWebView's NSView to Qt (QWindow.fromWinId +
+QWidget.createWindowContainer) — never addSubview_ it into winId()'s NSView.
+A raw subview is invisible to Qt, and inside IDA's dock its layer never joins
+the screen compositor: the deck renders correctly (a WKWebView snapshot is
+pixel-perfect) but the pane shows stale pixels of whatever was behind it,
+and NO programmatic fix reconnects it (native frame nudge, Qt widget resize,
+splitter, main-window resize, delayed attach all fail) — only resizing the
+dock BY HAND. Letting Qt own the native window fixes it at the root.
 
 CRASH SAFETY: a Python exception escaping a PyObjC delegate method becomes an
 ObjC exception that unwinds through WebKit and aborts IDA. Worse, PyObjC
@@ -25,7 +33,8 @@ import os
 import sys
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import QWindow
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 import deck_view
 
@@ -113,6 +122,8 @@ class DeckWebKitView(deck_view.DeckViewBase):
         self._delegate = None
         self._msg_handler = None
         self._ucc = None
+        self._qwindow = None   # QWindow wrapping the WKWebView's NSView
+        self._holder = None    # the QWidget Qt builds around it
         super().__init__(parent)
 
     # ------------------------------------------------------------------
@@ -136,17 +147,34 @@ class DeckWebKitView(deck_view.DeckViewBase):
         ucc.addUserScript_(script)
         self._ucc = ucc
 
-        nsview = objc.objc_object(c_void_p=int(self._container.winId()))
+        w = max(self._container.width(), 1)
+        h = max(self._container.height(), 1)
         web = WebKit.WKWebView.alloc().initWithFrame_configuration_(
-            nsview.bounds(), conf
-        )
-        web.setAutoresizingMask_(
-            AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable
+            AppKit.NSMakeRect(0, 0, w, h), conf
         )
         self._delegate = nav_cls.alloc().init()
         self._delegate.setOwner_(self)
         web.setNavigationDelegate_(self._delegate)  # weak ref; we hold it
-        nsview.addSubview_(web)
+
+        # Embed through Qt's native-window container, NOT by poking
+        # addSubview_ into winId()'s NSView. A raw subview is invisible to
+        # Qt, and inside IDA's dock its layer never joins the screen
+        # compositor: the deck renders (a WKWebView snapshot is perfect) but
+        # the pane shows stale pixels of whatever was behind it, until the
+        # dock is resized BY HAND — no programmatic resize (native frame, Qt
+        # widget, splitter, main window) reconnects it. Handing the NSView to
+        # Qt as a QWindow makes Qt own its geometry and compositing, which is
+        # what actually puts it on screen.
+        ptr = objc.pyobjc_id(web)
+        qwin = QWindow.fromWinId(ptr)
+        holder = QWidget.createWindowContainer(qwin, self._container)
+        layout = QVBoxLayout(self._container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(holder)
+
+        self._qwindow = qwin
+        self._holder = holder
         self._web = web
         self._attach_done()
 
@@ -165,9 +193,18 @@ class DeckWebKitView(deck_view.DeckViewBase):
         if self._web is not None:
             try:
                 self._web.setNavigationDelegate_(None)
-                self._web.removeFromSuperview()
             except Exception:
                 logger.exception("webview teardown failed")
+        # Qt owns the native view through the container: dropping the holder
+        # takes the QWindow (and the WKWebView's NSView) down with it
+        if self._holder is not None:
+            try:
+                self._holder.setParent(None)
+                self._holder.deleteLater()
+            except Exception:
+                logger.exception("window container teardown failed")
+        self._holder = None
+        self._qwindow = None
         self._delegate = None
         self._msg_handler = None
 
