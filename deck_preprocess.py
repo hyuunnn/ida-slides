@@ -12,7 +12,10 @@ embeds work identically in both. Supported forms:
     @sub_401000[1:8@5]   lines 1-8 with line 5 marked (►)
 
 Tokens inside fenced code blocks or inline backtick spans are left alone so
-decks can document the syntax itself.
+decks can document the syntax itself. Tokens inside HTML comments are left
+alone too: comments never render, and the lint can't see them (parse_deck
+strips comments), so expanding there would decompile invisibly and
+un-lintably.
 """
 
 import logging
@@ -23,7 +26,11 @@ import marp_markdown
 
 logger = logging.getLogger(__name__)
 
-_INLINE_CODE_RE = re.compile(r"`[^`]*`")
+# a code span opens with a run of backticks and closes with an equal-length
+# run (CommonMark), so ``@name[1:3]`` protects its token just like `...`
+# (the old `[^`]*` form matched each `` pair as an EMPTY span, leaving the
+# token between them unprotected)
+_INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
 
 EMBED_RE = re.compile(
     rf"(?<![A-Za-z0-9_@])@({ida_links._NAME_PATTERN})"
@@ -184,24 +191,61 @@ def unresolved_refs(text: str) -> list[tuple[int, str]]:
     return out
 
 
-def _expand_line(line: str) -> str:
+def _comment_spans(
+    line: str, in_comment: bool
+) -> tuple[list[tuple[int, int]], bool]:
+    """Char spans of `line` that lie inside HTML comments, given whether
+    the line starts inside one. Returns (spans, inside-at-end-of-line)."""
+    spans: list[tuple[int, int]] = []
+    i = 0
+    span_start = 0 if in_comment else None
+    while True:
+        if span_start is None:
+            start = line.find("<!--", i)
+            if start == -1:
+                return spans, False
+            span_start = start
+            i = start + 4
+        else:
+            end = line.find("-->", i)
+            if end == -1:
+                spans.append((span_start, len(line)))
+                return spans, True
+            spans.append((span_start, end + 3))
+            span_start = None
+            i = end + 3
+
+
+def _expand_line(
+    line: str, skip_spans: list[tuple[int, int]] | None = None
+) -> str:
     if "@" not in line or "[" not in line:
         return line
     spans = [m.span() for m in _INLINE_CODE_RE.finditer(line)]
+    if skip_spans:
+        spans.extend(skip_spans)
 
     def _sub(match: re.Match) -> str:
         pos = match.start()
         if any(a <= pos < b for a, b in spans):
-            return match.group(0)  # inside inline code — leave as-is
+            return match.group(0)  # inside inline code / a comment — as-is
         return _render_embed(match)
 
     return EMBED_RE.sub(_sub, line)
 
 
 def expand_embeds(text: str) -> str:
-    """Expand all embed tokens in deck text, skipping fenced code blocks."""
-    out = [
-        line if in_code else _expand_line(line)
-        for line, in_code in marp_markdown.iter_fenced(text.splitlines())
-    ]
+    """Expand all embed tokens in deck text, skipping fenced code blocks
+    and HTML comments (see module docstring)."""
+    out: list[str] = []
+    in_comment = False
+    for line, in_code in marp_markdown.iter_fenced(text.splitlines()):
+        if in_code:
+            # fence wins over comment state, matching iter_fenced; the
+            # comment-spanning-a-fence interplay is deliberately untracked
+            # here (pending an owner ruling on the lint side too)
+            out.append(line)
+            continue
+        spans, in_comment = _comment_spans(line, in_comment)
+        out.append(_expand_line(line, spans))
     return "\n".join(out) + ("\n" if text.endswith("\n") else "")

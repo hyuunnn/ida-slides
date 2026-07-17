@@ -62,8 +62,11 @@ def iter_fenced(lines):
 
     `in_code` is True for the fence marker lines themselves and for every
     line inside an open fence. A closing fence must repeat the opening
-    character and be at least as long — an inner ``` does not close a
-    ```` block, and a tilde fence is not closed by a backtick fence.
+    character, be at least as long, and carry no info string — an inner
+    ``` does not close a ```` block, a tilde fence is not closed by a
+    backtick fence, and a "```python" line inside an open ``` block is
+    content (CommonMark forbids info strings on closing fences; marp
+    keeps the fence open, so we must too).
     """
     fence: str | None = None
     for line in lines:
@@ -72,7 +75,11 @@ def iter_fenced(lines):
             marker = m.group(1)
             if fence is None:
                 fence = marker
-            elif marker[0] == fence[0] and len(marker) >= len(fence):
+            elif (
+                marker[0] == fence[0]
+                and len(marker) >= len(fence)
+                and not line[m.end(1) :].strip()
+            ):
                 fence = None
             yield line, True
             continue
