@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 _FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 _SEPARATOR_RE = re.compile(r"^---\s*$")
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_ATX_RE = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
 
 
 def bespoke_restore_js(hash_value: str) -> str:
@@ -89,20 +90,27 @@ def iter_fenced(lines):
 def split_slides(text: str) -> list[str]:
     slides: list[str] = []
     current: list[str] = []
+    prev_in_code = False
 
     for line, in_code in iter_fenced(text.splitlines()):
         if not in_code and _SEPARATOR_RE.match(line):
-            # CommonMark: '---' directly under a non-blank line is a setext
+            # CommonMark: '---' directly under PARAGRAPH text is a setext
             # H2 underline, not a thematic break — marp keeps it on the
-            # same slide, so we must too
-            if current and current[-1].strip():
+            # same slide, so we must too. After an ATX heading or a fence
+            # line there is no open paragraph, so marp splits there
+            # (verified against the marp CLI).
+            prev = current[-1] if current else ""
+            if prev.strip() and not prev_in_code and not _ATX_RE.match(prev):
                 current.append(line)
+                prev_in_code = False
                 continue
             slides.append("\n".join(current).strip())
             current = []
+            prev_in_code = False
             continue
 
         current.append(line)
+        prev_in_code = in_code
 
     slides.append("\n".join(current).strip())
     return [s for s in slides if s] or [""]

@@ -91,6 +91,11 @@ def test_split_slides_setext():
     eq(len(marp_markdown.split_slides("Overview\n---\nbody text")), 1)
     # a blank line before '---' makes it a real separator
     eq(len(marp_markdown.split_slides("Overview\n\n---\n\nbody text")), 2)
+    # marp splits after an ATX heading or a closing fence — there is no
+    # open paragraph there, so '---' is a thematic break, not an underline
+    # (both verified against the marp CLI)
+    eq(len(marp_markdown.split_slides("# Title\n---\nbody")), 2)
+    eq(len(marp_markdown.split_slides("```\nx\n```\n---\nB")), 2)
 
 
 def test_split_slides_fence_length():
@@ -267,6 +272,10 @@ def test_expand_embeds_skips_comments():
     spans, inside = deck_preprocess._comment_spans("<!-- x --> @foo[1]", False)
     eq(spans, [(0, 10)])
     eq(inside, False)
+    # YAML front matter is never expanded — a code block spliced into it
+    # corrupts the metadata the engines parse
+    fm = "---\ntitle: see @foo[1:2]\n---\n\nbody"
+    eq(deck_preprocess.expand_embeds(fm).rstrip("\n"), fm)
 
 
 def test_iter_fenced_closing_info_string():
@@ -279,22 +288,38 @@ def test_iter_fenced_closing_info_string():
 
 
 def test_output_is_current():
-    # a "=>" line for a render that predates the latest prepared input is
-    # stale and must not satisfy the wait (save landed mid-render)
+    # a "=>" line for a render of an OLDER input version is stale and must
+    # not satisfy the wait (save landed mid-render). Currency is decided by
+    # the content-hash marker _prepare_md stamps into the input and marp
+    # copies into the html; mtimes are only the no-marker fallback.
     d = tempfile.mkdtemp()
     prepared = os.path.join(d, "in.md")
     out = os.path.join(d, "out.html")
+    marker = '<div hidden data-ida-slides="{}"></div>'
     try:
         with open(prepared, "w") as f:
-            f.write("x")
+            f.write(f"deck\n{marker.format('aaa111')}\n")
         with open(out, "w") as f:
-            f.write("y")
+            f.write(f"<html>{marker.format('aaa111')}</html>")
+        truthy(deck_view._output_is_current(out, prepared), "matching marker")
+        # output rendered from an older input: marker mismatch loses even
+        # though the output file is NEWER (the mid-render race mtimes miss)
+        with open(prepared, "w") as f:
+            f.write(f"deck v2\n{marker.format('bbb222')}\n")
         os.utime(prepared, (1000, 1000))
         os.utime(out, (2000, 2000))
-        truthy(deck_view._output_is_current(out, prepared), "newer output")
+        truthy(not deck_view._output_is_current(out, prepared),
+               "stale render must be skipped despite newer mtime")
+        # no marker in the input → fall back to the mtime order
+        with open(prepared, "w") as f:
+            f.write("plain\n")
+        os.utime(prepared, (1000, 1000))
+        os.utime(out, (2000, 2000))
+        truthy(deck_view._output_is_current(out, prepared),
+               "fallback: newer output")
         os.utime(out, (500, 500))
         truthy(not deck_view._output_is_current(out, prepared),
-               "stale output must be skipped")
+               "fallback: stale output must be skipped")
         # unknowable cases resolve True (caller's isfile check owns them)
         truthy(deck_view._output_is_current(out, None), "no prepared path")
         truthy(deck_view._output_is_current(os.path.join(d, "gone"), prepared),
@@ -390,6 +415,16 @@ def test_decompile_lines():
 def test_preview_text():
     name, _ = _pick_function()
     truthy(deck_preprocess.preview_text(name).strip(), "preview non-empty")
+    # '…' means "more lines exist", never "the window came back full": the
+    # no-line preview shows it iff the function is longer than 8 lines, and
+    # a window ending exactly at the last line must not show it
+    total_lines, err = deck_preprocess.decompile_lines(name, None, None)
+    if err is None:
+        total = len(total_lines)
+        eq(deck_preprocess.preview_text(name).endswith("…"), total > 8)
+        if total >= 8:
+            exact = deck_preprocess.preview_text(name, total - 5)
+            truthy(not exact.endswith("…"), "exact-fit window shows no …")
 
 
 def test_expand_embeds_live():

@@ -15,23 +15,30 @@ ACTION_SHORTCUT = "Ctrl+Shift+M"
 MENU_PATH = "View/Open subviews/"
 
 
+def _ask_and_open() -> bool:
+    """Prompt for a deck and open it, warning the user on every failure.
+    Shared by the menu action and the plugin's run() so both surface errors
+    the same way instead of drifting apart."""
+    path = ida_kernwin.ask_file(False, FILE_FILTER, "Open slide deck")
+    if not path:
+        return False
+    if not os.path.isfile(path):
+        ida_kernwin.warning(f"ida-slides: file not found:\n{path}")
+        return False
+    try:
+        SlidesForm.show_for_file(path)
+    except Exception:
+        logger.exception("ida-slides: failed to open %s", path)
+        ida_kernwin.warning(
+            "ida-slides: failed to open the deck. See Output window for details."
+        )
+        return False
+    return True
+
+
 class _OpenSlidesHandler(ida_kernwin.action_handler_t):
     def activate(self, ctx) -> int:
-        path = ida_kernwin.ask_file(False, FILE_FILTER, "Open slide deck")
-        if not path:
-            return 0
-        if not os.path.isfile(path):
-            ida_kernwin.warning(f"ida-slides: file not found:\n{path}")
-            return 0
-        try:
-            SlidesForm.show_for_file(path)
-        except Exception:
-            logger.exception("ida-slides: failed to open %s", path)
-            ida_kernwin.warning(
-                "ida-slides: failed to open the deck. See Output window for details."
-            )
-            return 0
-        return 1
+        return 1 if _ask_and_open() else 0
 
     def update(self, ctx) -> int:
         return ida_kernwin.AST_ENABLE_ALWAYS
@@ -78,13 +85,7 @@ class ida_slides_plugmod_t(ida_idaapi.plugmod_t):
 
     def run(self, arg):
         # Triggered by "Run plugin" — same path as the menu action.
-        path = ida_kernwin.ask_file(False, FILE_FILTER, "Open slide deck")
-        if not path or not os.path.isfile(path):
-            return
-        try:
-            SlidesForm.show_for_file(path)
-        except Exception:
-            logger.exception("ida-slides: failed to open %s", path)
+        _ask_and_open()
 
     def term(self):
         try:

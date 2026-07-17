@@ -74,6 +74,13 @@ class DebouncedFileWatcher(QObject):
             return
         if not self._watcher.addPath(self._path):
             logger.warning("file_watcher: re-addPath failed for %s", self._path)
+            return
+        # The file came back after being gone (delete → recreate slower than
+        # the debounce, e.g. git checkout): the debounced emit may already
+        # have fired into the missing-file window and left the pane on an
+        # error. Restart the debounce so the recreated content loads; for a
+        # fast atomic rename this only nudges the emit a little later.
+        self._timer.start(_DEBOUNCE_MS)
 
     def _emit(self) -> None:
         if self._path is not None:
