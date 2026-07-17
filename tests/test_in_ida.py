@@ -367,6 +367,12 @@ def test_expand_embeds_live():
     out = deck_preprocess.expand_embeds(f"@{name}[1:2]")
     truthy("```c" in out, "embed produced a code block")
     truthy(name in out, "embed header names the function")
+    # a 0 start is outside the 1-based contract: it must behave exactly like
+    # 1 (same header, same ► position), not shift the marker down a line
+    eq(
+        deck_preprocess.expand_embeds(f"@{name}[0:2@1]"),
+        deck_preprocess.expand_embeds(f"@{name}[1:2@1]"),
+    )
 
 
 def test_unresolved_refs_live():

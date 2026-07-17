@@ -105,6 +105,9 @@ def _render_embed(match: re.Match) -> str:
     start_s, end_s, hl_s = match.group(2), match.group(3), match.group(4)
 
     start = int(start_s) if start_s else None
+    if start == 0:
+        start = 1  # lines are 1-based; align with decompile_lines' clamp so
+                   # the ► arithmetic below can't drift off by one
     if end_s is not None:
         end = int(end_s) if end_s else None          # "a:b", "a:", ":b"
     elif start is not None:
@@ -133,7 +136,7 @@ def _render_embed(match: re.Match) -> str:
     if start is None and end is None:
         header = f"// {name}"
     else:
-        header = f"// {name} [{start_s or 1}:{end_s if end_s else (end or '')}]"
+        header = f"// {name} [{start or 1}:{end_s if end_s else (end or '')}]"
     body = "\n".join(lines)
     return f"\n```c\n{header}\n{body}\n```\n"
 
