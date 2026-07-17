@@ -140,6 +140,16 @@ class DeckWebView2View(deck_view.DeckViewBase):
         _sweep_stale_udfs()
         self._attempt_attach(_user_data_dir(), retries_left=1)
 
+    def _attach_failed(self, msg: str) -> None:
+        # any failure verdict invalidates the current generation: a still-
+        # armed watchdog (or a stalled callback completing late) must not
+        # restart an attach on a view already declared failed. _retry_or_fail
+        # applies the same rule on its final-fail path; routing every other
+        # verdict (core-webview2 null, an exception escaping _attempt_attach
+        # into deck_view._attach_webview) through here closes the gaps.
+        self._attach_gen += 1
+        super()._attach_failed(msg)
+
     def _attempt_attach(self, udf: str, retries_left: int) -> None:
         """One environment→controller attempt against `udf`.
 

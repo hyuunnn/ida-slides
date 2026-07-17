@@ -246,6 +246,36 @@ def test_embed_regex_and_fences():
     eq(deck_preprocess.expand_embeds(fenced).rstrip("\n"), fenced)
     inline = "use `@foo[1:2]` to embed"
     eq(deck_preprocess.expand_embeds(inline).rstrip("\n"), inline)
+    # double-backtick code spans protect their token too — the old
+    # `[^`]*` regex matched each `` pair as an empty span, leaving the
+    # token between them unprotected
+    double = "use ``@foo[1:2]`` to embed"
+    eq(deck_preprocess.expand_embeds(double).rstrip("\n"), double)
+    # CommonMark: `a``b` is ONE span delimited by the single backticks
+    nested = "so `x``@foo[1:2]``y` here"
+    eq(deck_preprocess.expand_embeds(nested).rstrip("\n"), nested)
+
+
+def test_expand_embeds_skips_comments():
+    # tokens inside HTML comments never render and are invisible to the
+    # lint (parse_deck strips comments) — they must not expand either
+    note = "text\n<!-- @foo[1:2] -->\nmore"
+    eq(deck_preprocess.expand_embeds(note).rstrip("\n"), note)
+    multi = "a\n<!-- note\n@foo[]\nstill note -->\nb"
+    eq(deck_preprocess.expand_embeds(multi).rstrip("\n"), multi)
+    # a token AFTER the comment closes on the same line is still live
+    spans, inside = deck_preprocess._comment_spans("<!-- x --> @foo[1]", False)
+    eq(spans, [(0, 10)])
+    eq(inside, False)
+
+
+def test_iter_fenced_closing_info_string():
+    # CommonMark: a closing fence carries no info string — a "```python"
+    # line inside an open ``` block is content and keeps the fence open
+    deck = "```\n```python\n@foo[1:2]\n```\ndone"
+    flags = [c for _, c in marp_markdown.iter_fenced(deck.splitlines())]
+    eq(flags, [True, True, True, True, False])
+    eq(deck_preprocess.expand_embeds(deck).rstrip("\n"), deck)
 
 
 def test_output_is_current():
@@ -399,6 +429,8 @@ ALL = [
     ("detect_engine_marp", test_detect_engine_marp),
     ("detect_engine_slidev", test_detect_engine_slidev),
     ("embed_regex_and_fences", test_embed_regex_and_fences),
+    ("expand_embeds_skips_comments", test_expand_embeds_skips_comments),
+    ("iter_fenced_closing_info_string", test_iter_fenced_closing_info_string),
     ("output_is_current", test_output_is_current),
     ("file_watcher_stale_path", test_file_watcher_stale_path),
     ("copy_ref_name_validation", test_copy_ref_name_validation),

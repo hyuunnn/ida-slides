@@ -202,9 +202,15 @@ class SlidesForm(ida_kernwin.PluginForm):
             self._load(path)
 
     def _on_reload_clicked(self) -> None:
-        if self._renderer is not None:
-            self._renderer.reload()
-            self._refresh_status()
+        if self._renderer is None:
+            return
+        if self._path and getattr(self._renderer, "attach_failed", False):
+            # reload() no-ops on a shell that never attached — re-route
+            # through _load so _ensure_renderer can rebuild it
+            self._load(self._path)
+            return
+        self._renderer.reload()
+        self._refresh_status()
 
     def _on_open_browser_clicked(self) -> None:
         if self._path:
@@ -259,6 +265,12 @@ class SlidesForm(ida_kernwin.PluginForm):
         # the watcher only ever emits its currently watched path (stale
         # signals are dropped inside DebouncedFileWatcher)
         if self._renderer is None:
+            return
+        if getattr(self._renderer, "attach_failed", False):
+            # the webview never attached, so on_source_changed() would
+            # return silently forever — rebuild via _load (which runs
+            # _ensure_renderer) and render this save on the fresh shell
+            self._load(path)
             return
         # slidev's HMR handles saves itself; the marp path re-renders
         self._renderer.on_source_changed()

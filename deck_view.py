@@ -769,6 +769,11 @@ class DeckViewBase(QWidget):
         if self._path is None or self._web is None:
             return
         if self._slidev_proc is not None:
+            # regenerate the prepared md first so Reload also refreshes
+            # @name[a:b] embeds after an IDB rename (same as a save); the
+            # full page reload below then repaints — and resets page state
+            # (hover-preview cache included) — even when the md is unchanged
+            self._prepare_md(self._path)
             try:
                 self._native_eval_js("window.location.reload()")
             except Exception:
@@ -956,9 +961,7 @@ class DeckViewBase(QWidget):
         )
         proc.setStandardInputFile(QProcess.nullDevice())
         proc.setWorkingDirectory(os.path.dirname(md_path))
-        proc.errorOccurred.connect(
-            lambda _e: self._show_status("slidev failed to start")
-        )
+        proc.errorOccurred.connect(self._on_slidev_error)
         proc.finished.connect(self._on_slidev_exit)
         self._slidev_proc = proc
         self._slidev_md = md_path
@@ -1002,11 +1005,29 @@ class DeckViewBase(QWidget):
                 return lines[-1]
         return ""
 
+    def _on_slidev_error(self, error) -> None:
+        # only FailedToStart is terminal without a finished() signal: the
+        # dead QProcess would otherwise keep reload()/on_source_changed on
+        # the slidev branch forever (saves regenerating the md for a server
+        # that doesn't exist). A crash also emits finished(), which
+        # _on_slidev_exit reports with the real exit detail.
+        if error != QProcess.ProcessError.FailedToStart:
+            return
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
+        self._slidev_proc = None
+        self._slidev_md = None
+        self._slidev_port = None
+        self._show_status("slidev failed to start")
+
     def _on_slidev_exit(self, exit_code: int, _status) -> None:
         if self._poll_timer is not None:
             self._poll_timer.stop()
         proc, self._slidev_proc = self._slidev_proc, None
-        if proc is not None and exit_code != 0:
+        if proc is not None:
+            # a clean exit (code 0) is just as fatal here: the dev server
+            # is gone and the readiness poll above was stopped, so staying
+            # silent would leave "slidev starting…" up forever
             detail = self._proc_error_detail(proc)
             self._show_status(_with_detail(f"slidev exited ({exit_code})", detail))
 
@@ -1187,8 +1208,14 @@ class DeckViewBase(QWidget):
                 pass
             _kill_tool_proc(proc)
 
-    def _on_marp_error(self, _error) -> None:
-        # a failed start means no render is coming
+    def _on_marp_error(self, error) -> None:
+        # only a failed start means no render is coming AND no finished()
+        # follows. A crash (external kill, node OOM) also emits finished(),
+        # and _on_marp_exit must still be able to drain the final stderr —
+        # a render that completed just before death, or the crash reason —
+        # so _proc has to survive until then.
+        if error != QProcess.ProcessError.FailedToStart:
+            return
         self._abandon_pending_render()
         self._proc = None
         self._watch_key = None
