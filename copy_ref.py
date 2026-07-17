@@ -26,7 +26,11 @@ _NAME_OK = re.compile(rf"(?:{ida_links._NAME_PATTERN})\Z")
 
 def _token_name(ea: int) -> str:
     name = ida_name.get_name(ea)
-    if name and _NAME_OK.match(name):
+    # trailing-dot names ARE valid IDA names and re-parse fine, but the
+    # injected linkifier trims trailing dots as sentence punctuation, so a
+    # rendered "@test." link would resolve "test" and go nowhere — the
+    # raw-address fallback keeps the copied token's always-works contract
+    if name and _NAME_OK.match(name) and not name.endswith("."):
         return name
     return f"0x{ea:X}"
 

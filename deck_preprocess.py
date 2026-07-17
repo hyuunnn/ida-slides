@@ -12,10 +12,10 @@ embeds work identically in both. Supported forms:
     @sub_401000[1:8@5]   lines 1-8 with line 5 marked (►)
 
 Tokens inside fenced code blocks or inline backtick spans are left alone so
-decks can document the syntax itself. Tokens inside HTML comments are left
-alone too: comments never render, and the lint can't see them (parse_deck
-strips comments), so expanding there would decompile invisibly and
-un-lintably.
+decks can document the syntax itself. Tokens inside HTML comments and the
+YAML front matter are left alone too: comments never render and the lint
+can't see them (parse_deck strips comments), and a code block spliced into
+YAML corrupts the front matter the engines parse.
 """
 
 import logging
@@ -92,9 +92,15 @@ def preview_text(name: str, line: int | None = None, context: int = 8) -> str:
     else:
         start, end = 1, context
 
-    lines, err = decompile_lines(name, start, end)
+    # ask for one line beyond the window: its presence is the only reliable
+    # "more lines exist" signal — decompile_lines clamps to the function's
+    # end, so a full window alone can't distinguish exact-fit from truncation
+    lines, err = decompile_lines(name, start, end + 1)
     if err is not None:
         return f"⚠ {name}: {err}"
+    truncated = len(lines) > end - start + 1
+    if truncated:
+        lines = lines[: end - start + 1]
 
     out = []
     for i, text in enumerate(lines):
@@ -102,7 +108,7 @@ def preview_text(name: str, line: int | None = None, context: int = 8) -> str:
             out.append(("► " if start + i == line else "  ") + text)
         else:
             out.append(text)
-    if len(lines) >= end - start + 1:
+    if truncated:
         out.append("…")
     return "\n".join(out)
 
@@ -235,11 +241,18 @@ def _expand_line(
 
 
 def expand_embeds(text: str) -> str:
-    """Expand all embed tokens in deck text, skipping fenced code blocks
-    and HTML comments (see module docstring)."""
+    """Expand all embed tokens in deck text, skipping fenced code blocks,
+    YAML front matter and HTML comments (see module docstring — splicing
+    a code block into YAML corrupts the front matter: metadata lost,
+    engine detection broken)."""
+    lines = text.splitlines()
+    fm_end = marp_markdown._front_matter_end(lines)
     out: list[str] = []
     in_comment = False
-    for line, in_code in marp_markdown.iter_fenced(text.splitlines()):
+    for i, (line, in_code) in enumerate(marp_markdown.iter_fenced(lines)):
+        if fm_end is not None and i <= fm_end:
+            out.append(line)
+            continue
         if in_code:
             # fence wins over comment state, matching iter_fenced; the
             # comment-spanning-a-fence interplay is deliberately untracked

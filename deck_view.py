@@ -38,6 +38,7 @@ the deck's engine CLI, decks simply don't render (a status message says why).
 """
 
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -333,11 +334,15 @@ _tool_cache: dict[str, str] = {}
 
 
 def _find_node_tool(name: str) -> str | None:
-    # positive hits are cached (a found CLI rarely moves); misses re-probe,
-    # so installing the tool mid-session is picked up on the next save
+    # positive hits are cached; misses re-probe, so installing the tool
+    # mid-session is picked up on the next save. A cached hit is validated
+    # before use: an nvm upgrade can delete the whole version dir, and a
+    # stale path would fail every spawn until IDA restarts
     cached = _tool_cache.get(name)
     if cached:
-        return cached
+        if os.path.isfile(cached):
+            return cached
+        del _tool_cache[name]
     path = shutil.which(name)
     if not path:
         hits = []
@@ -479,19 +484,32 @@ def _with_detail(msg: str, detail: str | None) -> str:
     return f"{msg}: {detail}" if detail else msg
 
 
+# content-hash marker stamped into the prepared md by _prepare_md and
+# carried into the html by marp (raw HTML passes through with --html)
+_NONCE_RE = re.compile(r'data-ida-slides="([0-9a-f]+)"')
+
+
 def _output_is_current(out: str, prepared: str | None) -> bool:
     """True when `out` was rendered from the latest prepared input.
 
     A save landing while marp is mid-render makes the FIRST "=>" line
     describe the pre-save render; loading that would show stale content
-    AND consume the wait, dropping the follow-up render's line. The input
-    is always rewritten before a re-render, so a current output is at
-    least as new as its input. Missing files resolve True — the caller's
-    isfile check owns that case.
+    AND consume the wait, dropping the follow-up render's line. The
+    prepared input carries a content-hash marker (`_prepare_md`) that the
+    render copies into the html, so matching hashes decide currency —
+    mtimes can't: a stale render finishing WRITING after the input rewrite
+    passes an mtime check even though it READ the pre-save input. Falls
+    back to the mtime order when the marker is absent. Missing files
+    resolve True — the caller's isfile check owns that case.
     """
     if not prepared:
         return True
     try:
+        with open(prepared, encoding="utf-8", errors="replace") as f:
+            want = _NONCE_RE.search(f.read())
+        if want is not None:
+            with open(out, encoding="utf-8", errors="replace") as f:
+                return f'data-ida-slides="{want.group(1)}"' in f.read()
         return os.path.getmtime(out) >= os.path.getmtime(prepared)
     except OSError:
         return True
@@ -845,6 +863,7 @@ class DeckViewBase(QWidget):
         md_path: str,
         text: str | None = None,
         force_write: bool = False,
+        nonce: bool = False,
     ) -> tuple[str, bool]:
         """Expand embed tokens into a hidden sibling md.
 
@@ -855,7 +874,8 @@ class DeckViewBase(QWidget):
         leak a stale flag into a later save. Pass `text` when the caller
         already read the deck to avoid a re-read. `force_write` rewrites the
         sibling even when unchanged — used to nudge a reused `marp -w`
-        watcher into re-rendering after the output html vanished.
+        watcher into re-rendering after the output html vanished. `nonce`
+        (marp only) stamps a content-hash marker for _output_is_current.
         """
         try:
             import deck_preprocess
@@ -868,6 +888,25 @@ class DeckViewBase(QWidget):
         except Exception:
             logger.exception("embed preprocessing failed for %s", md_path)
             return md_path, True
+
+        if nonce:
+            # a hash of the expanded content, carried into the output html
+            # by marp, lets _output_is_current tell WHICH input version an
+            # output was rendered from. Hash-derived (not per-save) so a
+            # same-content save keeps the same marker and the diff guard
+            # below still skips the re-render. A hidden div, not a comment
+            # (marp turns comments into presenter notes), inserted right
+            # after the front matter where no fence can be open yet; the
+            # blank line keeps the following markdown out of the raw-HTML
+            # block.
+            h = hashlib.sha1(
+                expanded.encode("utf-8", "replace")
+            ).hexdigest()[:12]
+            lines = expanded.split("\n")
+            at = marp_markdown._front_matter_end(lines)
+            at = 0 if at is None else at + 1
+            lines[at:at] = [f'<div hidden data-ida-slides="{h}"></div>', ""]
+            expanded = "\n".join(lines)
 
         out = self._sibling(md_path, "md")
         try:
@@ -1088,7 +1127,9 @@ class DeckViewBase(QWidget):
         # holds the pre-error deck — re-rendering re-surfaces the error
         # or picks up an external fix)
         force = not os.path.isfile(out) or self._last_marp_err is not None
-        prepared, changed = self._prepare_md(md_path, text, force_write=force)
+        prepared, changed = self._prepare_md(
+            md_path, text, force_write=force, nonce=True
+        )
 
         # start (or reuse) the watcher; `marp -w` logs "=> <out>" to stderr
         # each time it finishes a render, which is our completion signal —
