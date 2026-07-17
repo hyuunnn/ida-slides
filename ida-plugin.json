@@ -3,7 +3,7 @@
   "plugin": {
     "name": "ida-slides",
     "entryPoint": "ida_slides_entry.py",
-    "version": "0.4.0",
+    "version": "0.4.1",
     "idaVersions": ">=9.2",
     "platforms": [
       "macos-x86_64",
