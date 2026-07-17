@@ -38,12 +38,6 @@ def resolve_ea(name: str) -> int:
     return ida_name.get_name_ea(ida_idaapi.BADADDR, name)
 
 
-def is_resolvable(name: str) -> bool:
-    import ida_idaapi
-
-    return resolve_ea(name) != ida_idaapi.BADADDR
-
-
 def jump_to(name: str, line: int | None = None) -> bool:
     import ida_idaapi
     import ida_kernwin

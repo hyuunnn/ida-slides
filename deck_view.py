@@ -144,7 +144,8 @@ USER_JS = r"""
         while (walker.nextNode()) {
             var n = walker.currentNode;
             if (n.parentElement &&
-                n.parentElement.closest('a,script,style,textarea,[contenteditable]'))
+                n.parentElement.closest(
+                    'a,script,style,textarea,[contenteditable],.ida-tip'))
                 continue;
             RE.lastIndex = 0;
             if (RE.test(n.nodeValue)) targets.push(n);
@@ -171,17 +172,47 @@ USER_JS = r"""
             });
             n.parentNode.replaceChild(span, n);
         });
-        return targets.length;
     }
 
     var observer = null;
     var scheduled = false;
+    var pending = [];   // element roots to relinkify; empty = whole document
+
+    function inTip(el) {
+        return !!(el && el.closest && el.closest('.ida-tip'));
+    }
+
+    // scope the rescan to what actually changed: a full-document TreeWalker
+    // per mutation batch is O(deck) — on Slidev (Vue transitions, HMR,
+    // characterData bindings) that walk would repeat as often as every
+    // 150ms. Tooltip show/hide mutations are dropped here entirely, so
+    // hovering never triggers a rescan at all.
+    function noteRecords(records) {
+        for (var i = 0; i < records.length; i++) {
+            var r = records[i];
+            if (r.type === 'characterData') {
+                var p = r.target.parentElement;
+                if (p && !inTip(p)) pending.push(p);
+                continue;
+            }
+            for (var j = 0; j < r.addedNodes.length; j++) {
+                var n = r.addedNodes[j];
+                var el = n.nodeType === 1 ? n : n.parentElement;
+                if (el && !inTip(el)) pending.push(el);
+            }
+        }
+        if (pending.length) schedule();
+    }
 
     function rescan() {
         scheduled = false;
         if (observer) observer.disconnect();
         addStyle();
-        linkify(document.body);
+        var roots = pending.length ? pending : [document.body];
+        pending = [];
+        for (var i = 0; i < roots.length; i++) {
+            if (roots[i] && roots[i].isConnected) linkify(roots[i]);
+        }
         if (observer && document.body)
             observer.observe(document.body,
                              {childList: true, subtree: true, characterData: true});
@@ -194,7 +225,7 @@ USER_JS = r"""
     }
 
     function boot() {
-        observer = new MutationObserver(schedule);
+        observer = new MutationObserver(noteRecords);
         rescan();
     }
     if (document.readyState === 'loading')
@@ -374,13 +405,23 @@ _NODE_CLI_ENTRIES = {
 }
 
 
+_node_cache: str | None = None
+
+
 def _find_node() -> str | None:
     """node.exe, looking past PATH: a Start-Menu-launched IDA can miss the
     nodejs PATH entry even though node is installed in the standard spot —
     without this, both spawn strategies die as a bare 'CLI failed to
-    start' with no hint that node itself is the missing piece."""
+    start' with no hint that node itself is the missing piece. Hits are
+    cached (validated like _tool_cache: an nvm swap can delete the dir);
+    misses re-probe so a mid-session install is picked up."""
+    global _node_cache
+    if _node_cache and os.path.isfile(_node_cache):
+        return _node_cache
+    _node_cache = None
     node = shutil.which("node")
     if node:
+        _node_cache = node
         return node
     for probe in (
         os.path.expandvars(r"%ProgramFiles%\nodejs\node.exe"),
@@ -388,6 +429,7 @@ def _find_node() -> str | None:
         os.path.expandvars(r"%NVM_SYMLINK%\node.exe"),  # nvm-windows
     ):
         if os.path.isfile(probe):
+            _node_cache = probe
             return probe
     return None
 
@@ -461,6 +503,12 @@ def _kill_tool_proc(proc: QProcess) -> None:
                 logger.exception("taskkill failed; falling back to kill()")
     proc.kill()
     proc.waitForFinished(1000)
+
+
+# the one home for what counts as a markdown deck — presenter_form's file
+# filter and lint gate and load()'s pipeline dispatch must agree, or a deck
+# ends up half-working (linted but loaded as raw html, or hidden from Open…)
+MD_EXTS = (".md", ".markdown")
 
 
 def _read_deck(path: str) -> str | None:
@@ -577,6 +625,19 @@ def _open_external(spec: str) -> None:
         logger.exception("failed to open external url")
 
 
+def _parse_name_line(body: dict) -> tuple[str, int | None]:
+    """The (name, line) pair of a page message — one parser for the jump
+    and preview branches, so clicks and hovers can't drift apart in how
+    they read the same token."""
+    name = str(body.get("name") or "")
+    line_v = body.get("line")
+    try:
+        line = int(str(line_v)) if line_v else None
+    except (TypeError, ValueError):
+        line = None
+    return name, line
+
+
 def dispatch_page_message(owner: "DeckViewBase", body: dict) -> None:
     """Route a message posted by USER_JS to the owning view.
 
@@ -588,23 +649,13 @@ def dispatch_page_message(owner: "DeckViewBase", body: dict) -> None:
     try:
         kind = str(body.get("type") or "")
         if kind == "jump":
-            name = str(body.get("name") or "")
-            line_v = body.get("line")
-            try:
-                line = int(str(line_v)) if line_v else None
-            except (TypeError, ValueError):
-                line = None
+            name, line = _parse_name_line(body)
             if name:
                 QTimer.singleShot(
                     0, lambda o=owner, n=name, l=line: o.do_jump(n, l)
                 )
         elif kind == "preview":
-            name = str(body.get("name") or "")
-            line_v = body.get("line")
-            try:
-                line = int(str(line_v)) if line_v else None
-            except (TypeError, ValueError):
-                line = None
+            name, line = _parse_name_line(body)
             req_id = str(body.get("id") or "")
             key = str(body.get("key") or "")
             if name:
@@ -733,7 +784,7 @@ class DeckViewBase(QWidget):
         pre-attach case."""
         self._path = path
         ext = os.path.splitext(path)[1].lower()
-        is_md = ext in (".md", ".markdown")
+        is_md = ext in MD_EXTS
         # read the deck once per load: engine detection and _prepare_md
         # both need the text, and this runs on every save via reload()
         text: str | None = None

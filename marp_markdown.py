@@ -9,10 +9,7 @@ front matter ends and what is inside a code fence:
 - HTML comments (Marp directives, presenter notes) are removed
 """
 
-import logging
 import re
-
-logger = logging.getLogger(__name__)
 
 _FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 _SEPARATOR_RE = re.compile(r"^---\s*$")
