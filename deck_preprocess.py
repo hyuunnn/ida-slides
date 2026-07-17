@@ -102,15 +102,20 @@ def preview_text(name: str, line: int | None = None, context: int = 8) -> str:
     if truncated:
         lines = lines[: end - start + 1]
 
-    out = []
-    for i, text in enumerate(lines):
-        if line is not None:
-            out.append(("► " if start + i == line else "  ") + text)
-        else:
-            out.append(text)
+    out = _mark_lines(lines, start, line) if line is not None else list(lines)
     if truncated:
         out.append("…")
     return "\n".join(out)
+
+
+def _mark_lines(lines: list[str], base: int, target: int) -> list[str]:
+    """Prefix each line with '► ' (where 1-based `base + i` == target) or
+    two alignment spaces — the one home of the marker convention, shared
+    by slide embeds and hover previews so the arrow can't drift apart."""
+    return [
+        ("► " if base + i == target else "  ") + text
+        for i, text in enumerate(lines)
+    ]
 
 
 def _render_embed(match: re.Match) -> str:
@@ -140,11 +145,7 @@ def _render_embed(match: re.Match) -> str:
 
     lo = start if start is not None else 1
     if highlight is not None and lo <= highlight < lo + len(lines):
-        marked = []
-        for i, text in enumerate(lines):
-            prefix = "► " if lo + i == highlight else "  "
-            marked.append(prefix + text)
-        lines = marked
+        lines = _mark_lines(lines, lo, highlight)
 
     if start is None and end is None:
         header = f"// {name}"

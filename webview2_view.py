@@ -51,12 +51,17 @@ def _user_data_dir() -> str:
     return os.path.join(base, "ida-slides", "webview2-data")
 
 
+_kernel32 = None
+
+
 def _pid_running(pid: int) -> bool:
-    kernel32 = ctypes.WinDLL("kernel32")
-    h = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    global _kernel32
+    if _kernel32 is None:  # lazy: this module can be imported off-Windows
+        _kernel32 = ctypes.WinDLL("kernel32")
+    h = _kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
     if not h:
         return False
-    kernel32.CloseHandle(h)
+    _kernel32.CloseHandle(h)
     return True
 
 
@@ -172,14 +177,10 @@ class DeckWebView2View(deck_view.DeckViewBase):
             lambda: self._on_attach_timeout(gen, udf, retries_left),
         )
 
-        def _on_ctrl(ctrl, hr) -> None:
-            QTimer.singleShot(
-                0, lambda: self._controller_ready(ctrl, hr, gen, udf,
-                                                  retries_left)
-            )
-
         if _shared_env is not None:
-            _shared_env.create_controller(hwnd, _on_ctrl)
+            _shared_env.create_controller(
+                hwnd, self._controller_cb(gen, udf, retries_left)
+            )
             return
 
         def _on_env(env, hr) -> None:
@@ -190,6 +191,19 @@ class DeckWebView2View(deck_view.DeckViewBase):
             )
 
         webview2_com.create_environment(_LOADER_PATH, udf, _on_env)
+
+    def _controller_cb(self, gen: int, udf: str, retries_left: int):
+        """The controller-completed callback for one attach attempt — one
+        builder for both the shared-env and fresh-env paths, so a guard
+        added to the deferral can't silently miss one of them. Escapes the
+        COM callback frame via singleShot before touching anything."""
+        def _on_ctrl(ctrl, hr) -> None:
+            QTimer.singleShot(
+                0, lambda: self._controller_ready(ctrl, hr, gen, udf,
+                                                  retries_left)
+            )
+
+        return _on_ctrl
 
     def _on_attach_timeout(self, gen: int, udf: str, retries_left: int) -> None:
         if gen != self._attach_gen or self._web is not None or self._closing:
@@ -231,14 +245,7 @@ class DeckWebView2View(deck_view.DeckViewBase):
             self._retry_or_fail(udf, retries_left)
             return
         _shared_env = env
-
-        def _on_ctrl(ctrl, hr2) -> None:
-            QTimer.singleShot(
-                0, lambda: self._controller_ready(ctrl, hr2, gen, udf,
-                                                  retries_left)
-            )
-
-        env.create_controller(hwnd, _on_ctrl)
+        env.create_controller(hwnd, self._controller_cb(gen, udf, retries_left))
 
     def _controller_ready(
         self, ctrl, hr: int, gen: int, udf: str, retries_left: int

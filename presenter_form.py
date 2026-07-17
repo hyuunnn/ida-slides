@@ -13,9 +13,11 @@ logger = logging.getLogger(__name__)
 
 _FORM_CAPTION = "ida-slides"
 
-FILE_FILTER = "*.md;*.markdown;*.html"
+# derived from deck_view.MD_EXTS (the single home of the deck-extension
+# rule) so the Open… filter, the lint gate and the render dispatch agree
+FILE_FILTER = ";".join(f"*{e}" for e in deck_view.MD_EXTS) + ";*.html"
 
-_MD_EXTS = (".md", ".markdown")
+_MD_EXTS = deck_view.MD_EXTS
 
 
 class SlidesForm(ida_kernwin.PluginForm):
@@ -245,10 +247,10 @@ class SlidesForm(ida_kernwin.PluginForm):
         try:
             import deck_preprocess
 
-            # utf-8-sig: a BOM would otherwise survive into the text and
-            # defeat the front-matter scan (lint slide numbering)
-            with open(self._path, encoding="utf-8-sig", errors="replace") as fh:
-                issues = deck_preprocess.unresolved_refs(fh.read())
+            text = deck_view._read_deck(self._path)
+            if text is None:
+                return []
+            issues = deck_preprocess.unresolved_refs(text)
         except Exception:
             logger.exception("reference lint failed for %s", self._path)
             return []

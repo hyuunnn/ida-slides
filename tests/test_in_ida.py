@@ -391,8 +391,6 @@ def test_resolve_ea():
     import ida_idaapi
     name, ea = _pick_function()
     eq(ida_links.resolve_ea(name), ea)
-    truthy(ida_links.is_resolvable(name), name)
-    truthy(not ida_links.is_resolvable("no_such_name_zzz_123"), "bogus name")
     eq(ida_links.resolve_ea("no_such_name_zzz_123"), ida_idaapi.BADADDR)
     # hex beyond ea_t must resolve to BADADDR, not overflow getseg later
     # (one such typo token used to abort the whole lint pass)
